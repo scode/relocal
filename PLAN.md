@@ -82,8 +82,8 @@ _Goal: Pure functions for hook management, fully unit tested._
 ### Step 6: `init` Command
 _Goal: First working user-facing command._
 
-- [ ] **6a. Create `src/commands/init.rs`** — interactive prompts via `dialoguer` for remote, exclude, apt_packages. Writes `relocal.toml` to current directory. No CommandRunner needed — purely local.
-- [ ] **6b. Unit test** — test TOML output generation from collected inputs (separate the I/O from the generation logic).
+- [x] **6a. Create `src/commands/init.rs`** — interactive prompts via `dialoguer` for remote, exclude, apt_packages. Writes `relocal.toml` to current directory. No CommandRunner needed — purely local.
+- [x] **6b. Unit test** — test TOML output generation from collected inputs (separate the I/O from the generation logic).
 
 ### Step 7: `remote install` Command
 _Goal: Remote environment setup works end-to-end._
