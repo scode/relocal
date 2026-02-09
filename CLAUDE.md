@@ -10,6 +10,12 @@ Rust CLI tool. See `SPEC.md` for the full specification.
 - **Don't clutter the spec** with minor implementation details like internal helper function names, error message wording, or module-private types. The spec describes _what_ and _why_, not every _how_.
 - When in doubt about whether a change is spec-worthy: if someone implementing from scratch would need to know it to produce a compatible tool, update the spec.
 
+## Documentation
+
+Add `///` docstrings to modules (via `//!` at the top of the file) and major public types (structs, enums, traits). Focus on the big picture: what the module/type is for, why it exists, and how it fits into the overall architecture. Do not document obvious things — e.g., a field `remote: String` on a config struct does not need `/// The remote host`. Reserve per-field/per-method docs for cases where the purpose or behavior is non-obvious.
+
+When modifying code, check that existing comments and docstrings in the affected area are still accurate. Update or remove any that have become stale or misleading due to your changes.
+
 ## After Writing Code
 
 ALWAYS run the following after you're done writing code, and fix any issues before considering the task complete:

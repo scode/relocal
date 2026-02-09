@@ -1,7 +1,17 @@
+//! Shared error types used across all relocal modules.
+//!
+//! Every module returns [`Result<T>`] which uses [`Error`] as the error type.
+//! Error messages are user-facing and include actionable recovery suggestions
+//! (e.g., "run `relocal init`").
+
 use std::path::PathBuf;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// All errors that relocal can produce.
+///
+/// Variants carry enough context to produce helpful user-facing messages:
+/// paths, session names, remote hosts, and recovery instructions.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(
