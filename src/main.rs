@@ -30,7 +30,27 @@ fn main() {
             }
         }
         Command::Remote { command } => match command {
-            RemoteCommand::Install => eprintln!("not yet implemented: remote install"),
+            RemoteCommand::Install => {
+                let root = discovery::find_repo_root(&std::env::current_dir().unwrap())
+                    .unwrap_or_else(|e| {
+                        eprintln!("Error: {e}");
+                        std::process::exit(1);
+                    });
+                let toml_str =
+                    std::fs::read_to_string(root.join("relocal.toml")).unwrap_or_else(|e| {
+                        eprintln!("Error reading relocal.toml: {e}");
+                        std::process::exit(1);
+                    });
+                let cfg = config::Config::parse(&toml_str).unwrap_or_else(|e| {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                });
+                let runner = runner::ProcessRunner;
+                if let Err(e) = commands::install::run(&runner, &cfg) {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            }
             RemoteCommand::Nuke => eprintln!("not yet implemented: remote nuke"),
         },
         Command::Start { .. } => eprintln!("not yet implemented: start"),
