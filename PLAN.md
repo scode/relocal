@@ -94,8 +94,8 @@ _Goal: Remote environment setup works end-to-end._
 ### Step 8: Sync Push / Pull Commands
 _Goal: Manual sync commands work, hook re-injection on push._
 
-- [ ] **8a. Create `src/commands/sync.rs`** — `sync_push` and `sync_pull` functions. Uses `build_rsync_args` from step 4, runs via `CommandRunner`. Push: after rsync, reads remote `.claude/settings.json` via SSH, runs `merge_hooks`, writes back. Pull: just rsync.
-- [ ] **8b. Unit tests with MockRunner** — verify rsync invoked with correct args for push/pull, verify hook re-injection happens after push (SSH read + write of settings.json), verify hook re-injection does NOT happen after pull.
+- [x] **8a. Create `src/commands/sync.rs`** — `sync_push` and `sync_pull` functions. Uses `build_rsync_args` from step 4, runs via `CommandRunner`. Push: after rsync, reads remote `.claude/settings.json` via SSH, runs `merge_hooks`, writes back. Pull: just rsync.
+- [x] **8b. Unit tests with MockRunner** — verify rsync invoked with correct args for push/pull, verify hook re-injection happens after push (SSH read + write of settings.json), verify hook re-injection does NOT happen after pull.
 
 ### Step 9: Status, List, Destroy, Remote Nuke Commands
 _Goal: All informational and cleanup commands work._
