@@ -137,19 +137,21 @@ Steps:
 1. Read `relocal.toml` from the repo root. Fail if not found.
 2. Validate the session name (see [Session Naming](#session-naming)).
 3. Check for stale FIFOs (see above). Fail if found.
-4. Create the remote working directory `~/relocal/<session-name>/` if it does
+4. Check that Claude Code is installed on the remote. Fail with a message
+   suggesting `relocal remote install` if not found.
+5. Create the remote working directory `~/relocal/<session-name>/` if it does
    not exist.
-5. Create session-specific FIFOs on the remote (see [Sync Sidecar](#sync-sidecar)):
+6. Create session-specific FIFOs on the remote (see [Sync Sidecar](#sync-sidecar)):
    - `~/relocal/.fifos/<session-name>-request`
    - `~/relocal/.fifos/<session-name>-ack`
-6. Perform an initial sync: local → remote (push).
-7. Install Claude project-level hooks in the remote working copy's
+7. Perform an initial sync: local → remote (push).
+8. Install Claude project-level hooks in the remote working copy's
    `.claude/settings.json` (see [Hook Mechanism](#hook-mechanism)).
-8. Start the sync sidecar (local background process, see
+9. Start the sync sidecar (local background process, see
    [Sync Sidecar](#sync-sidecar)).
-9. Open an interactive SSH session (`ssh -t`) to the remote host, `cd` into the
-   working directory, and exec `claude --dangerously-skip-permissions`.
-10. When the SSH session ends (Claude exits or user quits):
+10. Open an interactive SSH session (`ssh -t`) to the remote host, `cd` into the
+    working directory, and exec `claude --dangerously-skip-permissions`.
+11. When the SSH session ends (Claude exits or user quits):
     - Shut down the sync sidecar.
     - Clean up the remote FIFOs.
     - Print a summary (session name, remote path, reminder about `sync pull`).
@@ -427,9 +429,9 @@ mediates all syncs triggered by remote hooks.
   recovery instructions (use `relocal sync push`/`pull`).
 - **Missing `relocal.toml`**: All commands except `init` fail with a clear error
   message.
-- **Remote directory does not exist**: `start` creates it. `sync`, `status`,
-  `destroy` fail with a message suggesting `relocal start` or
-  `relocal remote install`.
+- **Remote directory does not exist**: `start` creates it. `sync` fails (rsync
+  reports the error). `status` reports that the directory does not exist (does
+  not fail). `destroy` fails with a message that the session was not found.
 - **Claude not installed on remote**: `start` fails with a message suggesting
   `relocal remote install`.
 - **Stale FIFOs on start**: `start` refuses to proceed and instructs the user

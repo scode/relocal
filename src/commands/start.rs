@@ -82,6 +82,17 @@ pub fn setup(
         });
     }
 
+    // 1b. Check Claude is installed on remote
+    eprintln!("Checking Claude installation...");
+    let claude_check = runner.run_ssh(&config.remote, &ssh::check_claude_installed())?;
+    if !claude_check.status.success() {
+        return Err(Error::Remote {
+            remote: config.remote.clone(),
+            message: "Claude Code is not installed. Run `relocal remote install` first."
+                .to_string(),
+        });
+    }
+
     // 2. Create remote working directory
     eprintln!("Creating remote working directory...");
     runner.run_ssh(&config.remote, &ssh::mkdir_work_dir(session_name))?;
@@ -147,6 +158,8 @@ mod tests {
         let mock = MockRunner::new();
         // 1. check_fifos_exist -> not found (good)
         mock.add_response(MockResponse::Fail(String::new()));
+        // 1b. check_claude_installed -> found
+        mock.add_response(MockResponse::Ok("/usr/local/bin/claude\n".into()));
         // 2. mkdir_work_dir
         mock.add_response(MockResponse::Ok(String::new()));
         // 3. create_fifos
@@ -161,8 +174,8 @@ mod tests {
         setup(&mock, &test_config(), "my-session", &repo_root(), false).unwrap();
 
         let inv = mock.invocations();
-        // check_fifos(1) + mkdir(1) + create_fifos(1) + rsync(1) + read_settings(1) + write_settings(1) = 6
-        assert_eq!(inv.len(), 6);
+        // check_fifos(1) + claude_check(1) + mkdir(1) + create_fifos(1) + rsync(1) + read_settings(1) + write_settings(1) = 7
+        assert_eq!(inv.len(), 7);
 
         // Verify order: check fifos
         match &inv[0] {
@@ -173,8 +186,16 @@ mod tests {
             _ => panic!("expected Ssh for fifo check"),
         }
 
-        // mkdir
+        // claude check
         match &inv[1] {
+            Invocation::Ssh { command, .. } => {
+                assert!(command.contains("command -v claude"));
+            }
+            _ => panic!("expected Ssh for claude check"),
+        }
+
+        // mkdir
+        match &inv[2] {
             Invocation::Ssh { command, .. } => {
                 assert!(command.contains("mkdir -p"));
                 assert!(command.contains("my-session"));
@@ -183,7 +204,7 @@ mod tests {
         }
 
         // create fifos
-        match &inv[2] {
+        match &inv[3] {
             Invocation::Ssh { command, .. } => {
                 assert!(command.contains("mkfifo"));
                 assert!(command.contains("my-session-request"));
@@ -193,10 +214,10 @@ mod tests {
         }
 
         // rsync (push)
-        assert!(matches!(&inv[3], Invocation::Rsync { .. }));
+        assert!(matches!(&inv[4], Invocation::Rsync { .. }));
 
         // hook reinjection (read + write)
-        match &inv[5] {
+        match &inv[6] {
             Invocation::Ssh { command, .. } => {
                 assert!(command.contains("relocal-hook.sh"));
             }
@@ -257,6 +278,7 @@ mod tests {
     fn setup_all_commands_target_correct_remote() {
         let mock = MockRunner::new();
         mock.add_response(MockResponse::Fail(String::new())); // fifo check
+        mock.add_response(MockResponse::Ok(String::new())); // claude check
         mock.add_response(MockResponse::Ok(String::new())); // mkdir
         mock.add_response(MockResponse::Ok(String::new())); // create fifos
         mock.add_response(MockResponse::Ok(String::new())); // rsync
@@ -283,6 +305,7 @@ mod tests {
     fn setup_verbose_passes_to_rsync() {
         let mock = MockRunner::new();
         mock.add_response(MockResponse::Fail(String::new())); // fifo check
+        mock.add_response(MockResponse::Ok(String::new())); // claude check
         mock.add_response(MockResponse::Ok(String::new())); // mkdir
         mock.add_response(MockResponse::Ok(String::new())); // create fifos
         mock.add_response(MockResponse::Ok(String::new())); // rsync
@@ -292,7 +315,7 @@ mod tests {
         setup(&mock, &test_config(), "s1", &repo_root(), true).unwrap();
 
         let inv = mock.invocations();
-        match &inv[3] {
+        match &inv[4] {
             Invocation::Rsync { args } => {
                 assert!(args.contains(&"--progress".to_string()));
             }
@@ -301,23 +324,40 @@ mod tests {
     }
 
     #[test]
+    fn setup_fails_if_claude_not_installed() {
+        let mock = MockRunner::new();
+        mock.add_response(MockResponse::Fail(String::new())); // fifo check (ok)
+        mock.add_response(MockResponse::Fail(String::new())); // claude check -> not found
+
+        let result = setup(&mock, &test_config(), "s1", &repo_root(), false);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Claude Code is not installed"));
+
+        let inv = mock.invocations();
+        assert_eq!(inv.len(), 2);
+    }
+
+    #[test]
     fn setup_fails_if_mkdir_fails() {
         let mock = MockRunner::new();
         mock.add_response(MockResponse::Fail(String::new())); // fifo check (ok)
+        mock.add_response(MockResponse::Ok(String::new())); // claude check
         mock.add_response(MockResponse::Err("permission denied".into())); // mkdir fails
 
         let result = setup(&mock, &test_config(), "s1", &repo_root(), false);
         assert!(result.is_err());
 
-        // Only fifo check + mkdir attempted
+        // fifo check + claude check + mkdir attempted
         let inv = mock.invocations();
-        assert_eq!(inv.len(), 2);
+        assert_eq!(inv.len(), 3);
     }
 
     #[test]
     fn setup_fails_if_create_fifos_fails() {
         let mock = MockRunner::new();
         mock.add_response(MockResponse::Fail(String::new())); // fifo check
+        mock.add_response(MockResponse::Ok(String::new())); // claude check
         mock.add_response(MockResponse::Ok(String::new())); // mkdir
         mock.add_response(MockResponse::Err("mkfifo failed".into())); // create fifos
 
@@ -325,6 +365,6 @@ mod tests {
         assert!(result.is_err());
 
         let inv = mock.invocations();
-        assert_eq!(inv.len(), 3);
+        assert_eq!(inv.len(), 4);
     }
 }
