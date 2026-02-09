@@ -16,6 +16,10 @@ Add `///` docstrings to modules (via `//!` at the top of the file) and major pub
 
 When modifying code, check that existing comments and docstrings in the affected area are still accurate. Update or remove any that have become stale or misleading due to your changes.
 
+## Testing
+
+Always include unit tests alongside new code. Every new function, method, or non-trivial behavior should have test coverage in a `#[cfg(test)]` module in the same file. Don't defer tests to a later step — write them as part of the implementation.
+
 ## After Writing Code
 
 ALWAYS run the following after you're done writing code, and fix any issues before considering the task complete:
