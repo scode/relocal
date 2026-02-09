@@ -87,7 +87,14 @@ fn main() {
                 }
             }
         },
-        Command::Start { .. } => eprintln!("not yet implemented: start"),
+        Command::Start { session_name } => {
+            let (root, cfg) = load_config();
+            let session = resolve_session(session_name, &root);
+            if let Err(e) = commands::start::run(&cfg, &session, &root, verbose) {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
         Command::Sync { command } => {
             let (root, cfg) = load_config();
             let runner = runner::ProcessRunner;

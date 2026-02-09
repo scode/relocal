@@ -115,10 +115,10 @@ _Goal: Background sync mediator works correctly._
 ### Step 11: `start` Command (Main Orchestration)
 _Goal: The primary user workflow works end-to-end._
 
-- [ ] **11a. Create `src/commands/start.rs`** — implements full flow: load config, validate session name, check stale FIFOs, create remote dir, create FIFOs, initial push, install hooks, start sidecar, SSH interactive session (`ssh -t ... "cd ~/relocal/<session> && claude --dangerously-skip-permissions"`), on SSH exit: shutdown sidecar, remove FIFOs, print summary.
-- [ ] **11b. Signal handling** — SIGINT forwarded naturally by SSH terminal. On SSH exit (any cause): cleanup proceeds.
-- [ ] **11c. Dirty shutdown handling** — detect SSH error exit, attempt FIFO cleanup (best-effort), print recovery instructions.
-- [ ] **11d. Unit tests with MockRunner** — verify full sequence of operations, verify stale FIFO detection (refuses to start), verify FIFO cleanup on clean exit, verify error path (SSH fails), verify summary printed.
+- [x] **11a. Create `src/commands/start.rs`** — implements full flow: load config, validate session name, check stale FIFOs, create remote dir, create FIFOs, initial push, install hooks, start sidecar, SSH interactive session (`ssh -t ... "cd ~/relocal/<session> && claude --dangerously-skip-permissions"`), on SSH exit: shutdown sidecar, remove FIFOs, print summary.
+- [x] **11b. Signal handling** — SIGINT forwarded naturally by SSH terminal. On SSH exit (any cause): cleanup proceeds.
+- [x] **11c. Dirty shutdown handling** — detect SSH error exit, attempt FIFO cleanup (best-effort), print recovery instructions.
+- [x] **11d. Unit tests with MockRunner** — verify full sequence of operations, verify stale FIFO detection (refuses to start), verify FIFO cleanup on clean exit, verify error path (SSH fails), verify summary printed.
 
 ### Step 12: Wire Up Main + End-to-End Smoke Test
 _Goal: All commands dispatched from main, binary works._
