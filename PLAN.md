@@ -56,7 +56,7 @@ _Goal: Cargo project compiles, core pure-logic modules exist with full unit test
 ### Step 2: CLI Parsing + Logging
 _Goal: All subcommands parse correctly, verbosity flags work, `main` dispatches._
 
-- [ ] **2a. Create `src/cli.rs`** — clap derive structs. Top-level `Cli` with global `-v` verbosity (count). Subcommands: `Init`, `Remote { Install | Nuke }`, `Start { session_name: Option<String> }`, `Sync { Push | Pull, session_name: Option<String> }`, `Status { session_name: Option<String> }`, `List`, `Destroy { session_name: Option<String> }`. Unit tests: each subcommand parses, verbosity levels (0=WARN, 1=INFO, 2=DEBUG, 3=TRACE), session name present/absent.
+- [x] **2a. Create `src/cli.rs`** — clap derive structs. Top-level `Cli` with global `-v` verbosity (count). Subcommands: `Init`, `Remote { Install | Nuke }`, `Start { session_name: Option<String> }`, `Sync { Push | Pull, session_name: Option<String> }`, `Status { session_name: Option<String> }`, `List`, `Destroy { session_name: Option<String> }`. Unit tests: each subcommand parses, verbosity levels (0=WARN, 1=INFO, 2=DEBUG, 3=TRACE), session name present/absent.
 - [ ] **2b. Wire up `src/main.rs`** — parse CLI, init tracing-subscriber with verbosity level, match on subcommand (stubs that print "not yet implemented"). Verify `cargo run -- --help` works.
 
 ### Step 3: CommandRunner Trait
