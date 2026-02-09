@@ -75,7 +75,7 @@ _Goal: Pure functions that build correct command arguments for all sync scenario
 ### Step 5: Hook JSON Merging + Hook Script Generation
 _Goal: Pure functions for hook management, fully unit tested._
 
-- [ ] **5a. `src/hooks.rs` — hook JSON merging** — `merge_hooks(existing: Option<serde_json::Value>, session_name: &str) -> serde_json::Value`. Handles all cases per spec: no existing file, no hooks key, no arrays, no relocal entry (append), existing relocal entry (update in place), user hooks preserved. Relocal hooks identified by `relocal-hook.sh` in command string.
+- [x] **5a. `src/hooks.rs` — hook JSON merging** — `merge_hooks(existing: Option<serde_json::Value>, session_name: &str) -> serde_json::Value`. Handles all cases per spec: no existing file, no hooks key, no arrays, no relocal entry (append), existing relocal entry (update in place), user hooks preserved. Relocal hooks identified by `relocal-hook.sh` in command string.
 - [ ] **5b. `src/hooks.rs` — hook script generation** — `hook_script_content() -> String`. Returns the bash script content for `relocal-hook.sh`. Unit test: script contains correct FIFO paths with `$RELOCAL_SESSION`, correct push/pull handling, correct ack reading.
 - [ ] **5c. Unit tests for hook merging** — all cases from spec section "Hook JSON Merging" (no file, no hooks key, no arrays, no relocal entry, existing entry, user hooks preserved, other keys preserved, correct session interpolation, idempotent).
 
