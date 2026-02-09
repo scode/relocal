@@ -100,11 +100,11 @@ _Goal: Manual sync commands work, hook re-injection on push._
 ### Step 9: Status, List, Destroy, Remote Nuke Commands
 _Goal: All informational and cleanup commands work._
 
-- [ ] **9a. Create `src/commands/status.rs`** — checks remote dir exists, Claude installed, FIFOs exist. All via SSH commands through `CommandRunner`.
-- [ ] **9b. Create `src/commands/list.rs`** — lists `~/relocal/` dirs excluding `.bin/` and `.fifos/`. Shows session name + size.
-- [ ] **9c. Create `src/commands/destroy.rs`** — prompts for confirmation, removes remote working dir + FIFOs. Uses `CommandRunner`.
-- [ ] **9d. Create `src/commands/nuke.rs`** — prompts for confirmation, removes entire `~/relocal/`. Uses `CommandRunner`.
-- [ ] **9e. Unit tests with MockRunner** for each command — verify correct SSH commands, verify confirmation prompt behavior.
+- [x] **9a. Create `src/commands/status.rs`** — checks remote dir exists, Claude installed, FIFOs exist. All via SSH commands through `CommandRunner`.
+- [x] **9b. Create `src/commands/list.rs`** — lists `~/relocal/` dirs excluding `.bin/` and `.fifos/`. Shows session name + size.
+- [x] **9c. Create `src/commands/destroy.rs`** — prompts for confirmation, removes remote working dir + FIFOs. Uses `CommandRunner`.
+- [x] **9d. Create `src/commands/nuke.rs`** — prompts for confirmation, removes entire `~/relocal/`. Uses `CommandRunner`.
+- [x] **9e. Unit tests with MockRunner** for each command — verify correct SSH commands, verify confirmation prompt behavior.
 
 ### Step 10: Sidecar Implementation
 _Goal: Background sync mediator works correctly._
