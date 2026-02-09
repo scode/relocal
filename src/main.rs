@@ -7,6 +7,7 @@ mod hooks;
 mod rsync;
 mod runner;
 mod session;
+mod sidecar;
 mod ssh;
 #[cfg(test)]
 mod test_support;
