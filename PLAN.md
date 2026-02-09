@@ -70,7 +70,7 @@ _Goal: Abstraction for shelling out to ssh/rsync, enabling mock-based testing of
 _Goal: Pure functions that build correct command arguments for all sync scenarios._
 
 - [x] **4a. Create `src/ssh.rs`** — helper functions to construct SSH command strings for: running remote commands, creating/removing remote directories, creating/checking/removing FIFOs, reading/writing to FIFOs.
-- [ ] **4b. Create `src/rsync.rs`** — `Direction` enum (`Push`, `Pull`). `build_rsync_args(config: &Config, direction: Direction, session_name: &str, repo_root: &Path, verbose: bool) -> Vec<String>`. Implements the complex `.claude/` filtering logic: exclude `.claude/` wholesale, re-include configured `claude_sync_dirs` subdirectories, include `settings.json` on push only (not pull). Unit tests per spec: base flags present, .gitignore filter, custom excludes, push vs pull .claude/ handling, correct source/dest paths, verbose adds --progress, non-default claude_sync_dirs.
+- [x] **4b. Create `src/rsync.rs`** — `Direction` enum (`Push`, `Pull`). `build_rsync_args(config: &Config, direction: Direction, session_name: &str, repo_root: &Path, verbose: bool) -> Vec<String>`. Implements the complex `.claude/` filtering logic: exclude `.claude/` wholesale, re-include configured `claude_sync_dirs` subdirectories, include `settings.json` on push only (not pull). Unit tests per spec: base flags present, .gitignore filter, custom excludes, push vs pull .claude/ handling, correct source/dest paths, verbose adds --progress, non-default claude_sync_dirs.
 
 ### Step 5: Hook JSON Merging + Hook Script Generation
 _Goal: Pure functions for hook management, fully unit tested._

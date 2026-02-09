@@ -2,6 +2,7 @@ mod cli;
 mod config;
 mod discovery;
 mod error;
+mod rsync;
 mod runner;
 mod session;
 mod ssh;
