@@ -4,6 +4,7 @@ mod discovery;
 mod error;
 mod runner;
 mod session;
+mod ssh;
 #[cfg(test)]
 mod test_support;
 
