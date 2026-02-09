@@ -1,4 +1,5 @@
 mod cli;
+mod commands;
 mod config;
 mod discovery;
 mod error;
@@ -22,7 +23,12 @@ fn main() {
         .init();
 
     match cli.command {
-        Command::Init => eprintln!("not yet implemented: init"),
+        Command::Init => {
+            if let Err(e) = commands::init::run(&std::env::current_dir().unwrap()) {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
         Command::Remote { command } => match command {
             RemoteCommand::Install => eprintln!("not yet implemented: remote install"),
             RemoteCommand::Nuke => eprintln!("not yet implemented: remote nuke"),
