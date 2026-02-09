@@ -19,7 +19,7 @@ fn default_claude_sync_dirs() -> Vec<String> {
 ///
 /// All fields except `remote` have defaults, so a minimal config is just
 /// `remote = "user@host"`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     pub remote: String,
 
