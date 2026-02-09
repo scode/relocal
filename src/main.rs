@@ -77,7 +77,14 @@ fn main() {
                     std::process::exit(1);
                 }
             }
-            RemoteCommand::Nuke => eprintln!("not yet implemented: remote nuke"),
+            RemoteCommand::Nuke => {
+                let (_root, cfg) = load_config();
+                let runner = runner::ProcessRunner;
+                if let Err(e) = commands::nuke::run(&runner, &cfg, true) {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            }
         },
         Command::Start { .. } => eprintln!("not yet implemented: start"),
         Command::Sync { command } => {
@@ -104,8 +111,31 @@ fn main() {
                 }
             }
         }
-        Command::Status { .. } => eprintln!("not yet implemented: status"),
-        Command::List => eprintln!("not yet implemented: list"),
-        Command::Destroy { .. } => eprintln!("not yet implemented: destroy"),
+        Command::Status { session_name } => {
+            let (root, cfg) = load_config();
+            let runner = runner::ProcessRunner;
+            let session = resolve_session(session_name, &root);
+            if let Err(e) = commands::status::run(&runner, &cfg, &session) {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Command::List => {
+            let (_root, cfg) = load_config();
+            let runner = runner::ProcessRunner;
+            if let Err(e) = commands::list::run(&runner, &cfg) {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Command::Destroy { session_name } => {
+            let (root, cfg) = load_config();
+            let runner = runner::ProcessRunner;
+            let session = resolve_session(session_name, &root);
+            if let Err(e) = commands::destroy::run(&runner, &cfg, &session, true) {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
     }
 }
