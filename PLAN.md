@@ -64,7 +64,7 @@ _Goal: Abstraction for shelling out to ssh/rsync, enabling mock-based testing of
 
 - [x] **3a. Create `src/runner.rs`** — `CommandRunner` trait with methods like: `run_ssh(&self, remote: &str, command: &str) -> Result<CommandOutput>`, `run_ssh_interactive(&self, remote: &str, command: &str) -> Result<ExitStatus>`, `run_rsync(&self, args: &[String]) -> Result<CommandOutput>`, `run_local(&self, program: &str, args: &[&str]) -> Result<CommandOutput>`. `CommandOutput` struct: `stdout: String, stderr: String, status: ExitStatus`.
 - [x] **3b. Implement `ProcessRunner`** (production impl) — uses `std::process::Command`. SSH commands use `ssh user@host "command"`. Interactive SSH uses `ssh -t`.
-- [ ] **3c. Create `MockRunner`** (in `#[cfg(test)]` or a test-support module) — records invocations, returns pre-configured results. Uses `RefCell<Vec<Invocation>>` for recording and a configurable response queue.
+- [x] **3c. Create `MockRunner`** (in `#[cfg(test)]` or a test-support module) — records invocations, returns pre-configured results. Uses `RefCell<Vec<Invocation>>` for recording and a configurable response queue.
 
 ### Step 4: SSH Helpers + rsync Argument Construction
 _Goal: Pure functions that build correct command arguments for all sync scenarios._
