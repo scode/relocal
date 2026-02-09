@@ -4,6 +4,8 @@ mod discovery;
 mod error;
 mod runner;
 mod session;
+#[cfg(test)]
+mod test_support;
 
 use clap::Parser;
 use cli::{Cli, Command, RemoteCommand, SyncCommand};
