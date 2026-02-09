@@ -2,6 +2,7 @@ mod cli;
 mod config;
 mod discovery;
 mod error;
+mod runner;
 mod session;
 
 use clap::Parser;
