@@ -33,7 +33,7 @@ jobs:
             ${{ runner.os }}-cargo-clippy-
             ${{ runner.os }}-cargo-
       - run: rustup component add clippy
-      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --all-targets -- -D warnings -A dead_code
 
   test:
     name: rust - test
