@@ -50,7 +50,7 @@ _Goal: Cargo project compiles, core pure-logic modules exist with full unit test
 - [x] **1b. Create `src/error.rs`** — shared error enum using `thiserror`. Variants for: ConfigNotFound, ConfigParse, InvalidSessionName, IoError, CommandFailed, RemoteError, etc.
 - [x] **1c. Create `src/config.rs`** — `Config` struct with serde derive. Parse from `&str`. Fields: `remote` (required), `exclude` (default `[]`), `apt_packages` (default `[]`), `claude_sync_dirs` (default `["skills", "commands", "plugins"]`). Deny unknown fields: no (forward compat). Unit tests per spec: minimal config, full config, missing remote, invalid TOML, defaults, unknown keys ignored.
 - [x] **1d. Create `src/session.rs`** — `validate_session_name(&str) -> Result<()>` (alphanumeric + hyphen + underscore, non-empty). `default_session_name(&Path) -> Result<String>` (from directory name). Unit tests per spec: valid names, invalid names (space, slash, dot, traversal, empty), default derivation, invalid directory name.
-- [ ] **1e. Create `src/discovery.rs`** — `find_repo_root(&Path) -> Result<PathBuf>`. Walks up looking for `relocal.toml`. Unit tests with `tempfile`: found in current dir, parent, grandparent, not found, nearest wins.
+- [x] **1e. Create `src/discovery.rs`** — `find_repo_root(&Path) -> Result<PathBuf>`. Walks up looking for `relocal.toml`. Unit tests with `tempfile`: found in current dir, parent, grandparent, not found, nearest wins.
 - [ ] **1f. Create `src/main.rs`** — minimal stub that compiles (`fn main() {}`), imports all modules.
 
 ### Step 2: CLI Parsing + Logging
