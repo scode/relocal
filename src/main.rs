@@ -1,21 +1,10 @@
 mod cli;
-mod commands;
-mod config;
-mod discovery;
-mod error;
-mod hooks;
-mod rsync;
-mod runner;
-mod session;
-mod sidecar;
-mod ssh;
-#[cfg(test)]
-mod test_support;
 
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use cli::{Cli, Command, RemoteCommand, SyncCommand};
+use relocal::{commands, config, discovery, runner, session};
 use tracing_subscriber::FmtSubscriber;
 
 /// Finds the repo root and loads `relocal.toml`. Exits on failure.

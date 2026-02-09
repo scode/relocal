@@ -58,6 +58,12 @@ pub struct MockRunner {
     responses: RefCell<Vec<MockResponse>>,
 }
 
+impl Default for MockRunner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MockRunner {
     pub fn new() -> Self {
         Self {
