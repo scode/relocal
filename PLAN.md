@@ -123,8 +123,8 @@ _Goal: The primary user workflow works end-to-end._
 ### Step 12: Wire Up Main + End-to-End Smoke Test
 _Goal: All commands dispatched from main, binary works._
 
-- [ ] **12a. Wire `src/main.rs`** — match each CLI subcommand to its implementation. Handle repo root discovery (skip for `init`). Resolve session name (default from dir name if not provided). Pass `ProcessRunner` + config + session to command functions.
-- [ ] **12b. Manual smoke test** — `cargo run -- init`, verify `relocal.toml` created. `cargo run -- --help`, verify all subcommands listed.
+- [x] **12a. Wire `src/main.rs`** — match each CLI subcommand to its implementation. Handle repo root discovery (skip for `init`). Resolve session name (default from dir name if not provided). Pass `ProcessRunner` + config + session to command functions.
+- [x] **12b. Manual smoke test** — `cargo run -- init`, verify `relocal.toml` created. `cargo run -- --help`, verify all subcommands listed.
 
 ### Step 13: Integration Tests
 _Goal: Real SSH/rsync/FIFO tests against localhost. All gated on `RELOCAL_TEST_REMOTE` env var._
