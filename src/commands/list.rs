@@ -18,9 +18,14 @@ pub fn run(runner: &dyn CommandRunner, config: &Config) -> Result<()> {
     }
 
     for line in output.stdout.lines() {
-        let name = line.trim();
-        if !name.is_empty() {
-            eprintln!("{name}");
+        let line = line.trim();
+        if !line.is_empty() {
+            // Output format from SSH: "name\tsize"
+            if let Some((name, size)) = line.split_once('\t') {
+                eprintln!("{name}\t{size}");
+            } else {
+                eprintln!("{line}");
+            }
         }
     }
 
@@ -39,7 +44,7 @@ mod tests {
     #[test]
     fn lists_sessions_via_ssh() {
         let mock = MockRunner::new();
-        mock.add_response(MockResponse::Ok("project-a\nproject-b\n".into()));
+        mock.add_response(MockResponse::Ok("project-a\t4.0K\nproject-b\t12K\n".into()));
 
         run(&mock, &test_config()).unwrap();
 
@@ -48,7 +53,7 @@ mod tests {
         match &inv[0] {
             Invocation::Ssh { remote, command } => {
                 assert_eq!(remote, "user@host");
-                assert!(command.contains("ls"));
+                assert!(command.contains("du -sh"));
                 assert!(command.contains("grep -v"));
             }
             _ => panic!("expected Ssh"),

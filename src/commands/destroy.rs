@@ -4,7 +4,7 @@
 //! for confirmation. Uses the [`CommandRunner`] trait for all SSH operations.
 
 use crate::config::Config;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::runner::CommandRunner;
 use crate::ssh;
 
@@ -18,6 +18,18 @@ pub fn run(
     session_name: &str,
     confirm: bool,
 ) -> Result<()> {
+    // Check the session exists
+    let dir_check = runner.run_ssh(&config.remote, &ssh::check_work_dir_exists(session_name))?;
+    let fifos_check = runner.run_ssh(&config.remote, &ssh::check_fifos_exist(session_name))?;
+    if !dir_check.status.success() && !fifos_check.status.success() {
+        return Err(Error::Remote {
+            remote: config.remote.clone(),
+            message: format!(
+                "session '{session_name}' not found. No working directory or FIFOs exist."
+            ),
+        });
+    }
+
     if confirm {
         let prompt = format!(
             "Remove session '{session_name}' on {}? This deletes {} and its FIFOs.",
@@ -58,6 +70,10 @@ mod tests {
     #[test]
     fn removes_working_dir_and_fifos() {
         let mock = MockRunner::new();
+        // dir check -> exists
+        mock.add_response(MockResponse::Ok(String::new()));
+        // fifos check -> exists
+        mock.add_response(MockResponse::Ok(String::new()));
         // rm work dir
         mock.add_response(MockResponse::Ok(String::new()));
         // rm fifos
@@ -66,9 +82,9 @@ mod tests {
         run(&mock, &test_config(), "my-session", false).unwrap();
 
         let inv = mock.invocations();
-        assert_eq!(inv.len(), 2);
+        assert_eq!(inv.len(), 4);
 
-        match &inv[0] {
+        match &inv[2] {
             Invocation::Ssh { remote, command } => {
                 assert_eq!(remote, "user@host");
                 assert!(command.contains("rm -rf"));
@@ -77,7 +93,7 @@ mod tests {
             _ => panic!("expected Ssh"),
         }
 
-        match &inv[1] {
+        match &inv[3] {
             Invocation::Ssh { remote, command } => {
                 assert_eq!(remote, "user@host");
                 assert!(command.contains("rm -f"));
@@ -91,6 +107,10 @@ mod tests {
     #[test]
     fn targets_correct_remote() {
         let mock = MockRunner::new();
+        // dir check -> exists
+        mock.add_response(MockResponse::Ok(String::new()));
+        // fifos check -> exists
+        mock.add_response(MockResponse::Ok(String::new()));
         mock.add_response(MockResponse::Ok(String::new()));
         mock.add_response(MockResponse::Ok(String::new()));
 
@@ -104,5 +124,19 @@ mod tests {
                 _ => panic!("expected Ssh"),
             }
         }
+    }
+
+    #[test]
+    fn nonexistent_session_returns_error() {
+        let mock = MockRunner::new();
+        // dir check -> not found
+        mock.add_response(MockResponse::Fail(String::new()));
+        // fifos check -> not found
+        mock.add_response(MockResponse::Fail(String::new()));
+
+        let result = run(&mock, &test_config(), "no-such-session", false);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("not found"));
     }
 }

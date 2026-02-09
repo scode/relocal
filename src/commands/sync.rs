@@ -23,7 +23,13 @@ pub fn sync_push(
 ) -> Result<()> {
     eprintln!("Pushing to remote...");
     let args = build_rsync_args(config, Direction::Push, session_name, repo_root, verbose);
-    runner.run_rsync(&args)?;
+    let rsync_result = runner.run_rsync(&args)?;
+    if !rsync_result.status.success() {
+        return Err(crate::error::Error::CommandFailed {
+            command: "rsync".to_string(),
+            message: rsync_result.stderr,
+        });
+    }
 
     reinject_hooks(runner, config, session_name)?;
 
@@ -41,7 +47,13 @@ pub fn sync_pull(
 ) -> Result<()> {
     eprintln!("Pulling from remote...");
     let args = build_rsync_args(config, Direction::Pull, session_name, repo_root, verbose);
-    runner.run_rsync(&args)?;
+    let rsync_result = runner.run_rsync(&args)?;
+    if !rsync_result.status.success() {
+        return Err(crate::error::Error::CommandFailed {
+            command: "rsync".to_string(),
+            message: rsync_result.stderr,
+        });
+    }
 
     eprintln!("Pull complete.");
     Ok(())

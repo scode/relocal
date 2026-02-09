@@ -106,9 +106,13 @@ pub fn rm_relocal_dir() -> String {
     format!("rm -rf {RELOCAL_DIR}")
 }
 
-/// Command to list session directories (excludes `.bin/` and `.fifos/`).
+/// Command to list session directories with sizes (excludes `.bin/` and `.fifos/`).
+///
+/// Output format: `<name>\t<size>` per line, e.g. `my-session\t4.0K`.
 pub fn list_sessions() -> String {
-    format!("ls -1 {RELOCAL_DIR} 2>/dev/null | grep -v '^\\.bin$' | grep -v '^\\.fifos$'")
+    format!(
+        "cd {RELOCAL_DIR} 2>/dev/null && for d in $(ls -1 | grep -v '^\\.bin$' | grep -v '^\\.fifos$'); do size=$(du -sh \"$d\" 2>/dev/null | cut -f1); echo \"$d\\t$size\"; done"
+    )
 }
 
 /// Command to check whether the remote working directory exists.
@@ -218,6 +222,7 @@ mod tests {
         assert!(cmd.contains("grep -v"));
         assert!(cmd.contains(".bin"));
         assert!(cmd.contains(".fifos"));
+        assert!(cmd.contains("du -sh"));
     }
 
     #[test]

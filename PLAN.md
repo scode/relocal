@@ -144,10 +144,10 @@ _Goal: Real SSH/rsync/FIFO tests against localhost. All gated on `RELOCAL_TEST_R
 ### Step 14: Final Polish + Spec Reconciliation
 _Goal: Implementation matches SPEC.md, code is clean._
 
-- [ ] **14a. Read SPEC.md end-to-end**, verify every behavior is implemented.
-- [ ] **14b. Update SPEC.md** if any design decisions diverged during implementation.
-- [ ] **14c. Run full test suite** — `cargo test` (unit) + `RELOCAL_TEST_REMOTE=$USER@localhost cargo test` (integration).
-- [ ] **14d. Run `cargo clippy`** and fix warnings.
+- [x] **14a. Read SPEC.md end-to-end**, verify every behavior is implemented.
+- [x] **14b. Update SPEC.md** if any design decisions diverged during implementation.
+- [x] **14c. Run full test suite** — `cargo test` (unit) + `RELOCAL_TEST_REMOTE=$USER@localhost cargo test` (integration).
+- [x] **14d. Run `cargo clippy`** and fix warnings.
 
 ## Notes
 
