@@ -46,7 +46,7 @@ tests/
 ### Step 1: Project Scaffold + Pure Foundations
 _Goal: Cargo project compiles, core pure-logic modules exist with full unit test coverage._
 
-- [ ] **1a. Create `Cargo.toml`** with dependencies: `clap` (features: derive), `serde` (features: derive), `toml`, `serde_json`, `tracing`, `tracing-subscriber`, `thiserror`, `dialoguer`. Dev-dependency: `tempfile`.
+- [x] **1a. Create `Cargo.toml`** with dependencies: `clap` (features: derive), `serde` (features: derive), `toml`, `serde_json`, `tracing`, `tracing-subscriber`, `thiserror`, `dialoguer`. Dev-dependency: `tempfile`.
 - [ ] **1b. Create `src/error.rs`** — shared error enum using `thiserror`. Variants for: ConfigNotFound, ConfigParse, InvalidSessionName, IoError, CommandFailed, RemoteError, etc.
 - [ ] **1c. Create `src/config.rs`** — `Config` struct with serde derive. Parse from `&str`. Fields: `remote` (required), `exclude` (default `[]`), `apt_packages` (default `[]`), `claude_sync_dirs` (default `["skills", "commands", "plugins"]`). Deny unknown fields: no (forward compat). Unit tests per spec: minimal config, full config, missing remote, invalid TOML, defaults, unknown keys ignored.
 - [ ] **1d. Create `src/session.rs`** — `validate_session_name(&str) -> Result<()>` (alphanumeric + hyphen + underscore, non-empty). `default_session_name(&Path) -> Result<String>` (from directory name). Unit tests per spec: valid names, invalid names (space, slash, dot, traversal, empty), default derivation, invalid directory name.
