@@ -1,9 +1,15 @@
-//! Hook JSON merging for `.claude/settings.json`.
+//! Hook JSON merging and hook script generation.
 //!
 //! Claude hooks are how the remote Claude session triggers syncs back to the
-//! local machine. This module handles merging relocal's hook entries into an
-//! existing `settings.json` without clobbering user-defined hooks or other keys.
-//! Relocal hooks are identified by `relocal-hook.sh` in the command string.
+//! local machine. This module has two responsibilities:
+//!
+//! 1. **JSON merging** ([`merge_hooks`]): merges relocal's hook entries into an
+//!    existing `settings.json` without clobbering user-defined hooks or other keys.
+//!    Relocal hooks are identified by `relocal-hook.sh` in the command string.
+//!
+//! 2. **Script generation** ([`hook_script_content`]): produces the bash script
+//!    installed at `~/relocal/.bin/relocal-hook.sh` on the remote. The script
+//!    communicates with the local sidecar via FIFOs.
 
 use serde_json::{json, Map, Value};
 
@@ -41,6 +47,38 @@ fn upsert_relocal_hook(array: &mut Vec<Value>, session_name: &str, direction: &s
     } else {
         array.push(new_entry);
     }
+}
+
+/// Returns the content of the `relocal-hook.sh` script installed on the remote.
+///
+/// The script accepts a direction argument (`push` or `pull`), writes it to the
+/// session's request FIFO, then blocks reading an ack from the ack FIFO. The
+/// sidecar on the local side performs the actual sync and writes the ack.
+pub fn hook_script_content() -> String {
+    r#"#!/bin/bash
+set -euo pipefail
+
+DIRECTION="${1:?Usage: relocal-hook.sh <push|pull>}"
+FIFO_DIR="$HOME/relocal/.fifos"
+REQUEST_FIFO="$FIFO_DIR/${RELOCAL_SESSION}-request"
+ACK_FIFO="$FIFO_DIR/${RELOCAL_SESSION}-ack"
+
+# Send sync request (blocks until sidecar reads it)
+echo "$DIRECTION" > "$REQUEST_FIFO"
+
+# Wait for ack (blocks until sidecar writes response)
+ACK=$(cat "$ACK_FIFO")
+
+if [ "$ACK" = "ok" ]; then
+    exit 0
+else
+    # Strip "error:" prefix if present
+    MSG="${ACK#error:}"
+    echo "$MSG" >&2
+    exit 1
+fi
+"#
+    .to_string()
 }
 
 /// Merges relocal hook configuration into an existing `settings.json` value.
@@ -238,5 +276,46 @@ mod tests {
         let first = merge_hooks(None, "s1");
         let second = merge_hooks(Some(first.clone()), "s1");
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn hook_script_has_shebang_and_strict_mode() {
+        let script = hook_script_content();
+        assert!(script.starts_with("#!/bin/bash\nset -euo pipefail\n"));
+    }
+
+    #[test]
+    fn hook_script_uses_relocal_session_env_var() {
+        let script = hook_script_content();
+        assert!(script.contains("${RELOCAL_SESSION}"));
+    }
+
+    #[test]
+    fn hook_script_fifo_paths() {
+        let script = hook_script_content();
+        assert!(script.contains("${RELOCAL_SESSION}-request"));
+        assert!(script.contains("${RELOCAL_SESSION}-ack"));
+        assert!(script.contains("$HOME/relocal/.fifos"));
+    }
+
+    #[test]
+    fn hook_script_writes_direction_to_request_fifo() {
+        let script = hook_script_content();
+        assert!(script.contains("echo \"$DIRECTION\" > \"$REQUEST_FIFO\""));
+    }
+
+    #[test]
+    fn hook_script_reads_ack() {
+        let script = hook_script_content();
+        assert!(script.contains("cat \"$ACK_FIFO\""));
+    }
+
+    #[test]
+    fn hook_script_handles_ok_and_error() {
+        let script = hook_script_content();
+        assert!(script.contains("\"$ACK\" = \"ok\""));
+        assert!(script.contains("exit 0"));
+        assert!(script.contains("exit 1"));
+        assert!(script.contains(">&2"));
     }
 }
