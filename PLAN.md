@@ -88,8 +88,8 @@ _Goal: First working user-facing command._
 ### Step 7: `remote install` Command
 _Goal: Remote environment setup works end-to-end._
 
-- [ ] **7a. Create `src/commands/install.rs`** — Implements all 6 steps from spec: APT packages, rustup, Claude Code, Claude auth, hook script, FIFO directory. Each step checks if already done (idempotent). Uses `CommandRunner` for all SSH operations.
-- [ ] **7b. Unit tests with MockRunner** — verify correct SSH commands are issued for each step, verify idempotency (already-installed detection), verify user packages from config are included in APT command.
+- [x] **7a. Create `src/commands/install.rs`** — Implements all 6 steps from spec: APT packages, rustup, Claude Code, Claude auth, hook script, FIFO directory. Each step checks if already done (idempotent). Uses `CommandRunner` for all SSH operations.
+- [x] **7b. Unit tests with MockRunner** — verify correct SSH commands are issued for each step, verify idempotency (already-installed detection), verify user packages from config are included in APT command.
 
 ### Step 8: Sync Push / Pull Commands
 _Goal: Manual sync commands work, hook re-injection on push._
