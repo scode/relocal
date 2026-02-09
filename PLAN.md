@@ -109,8 +109,8 @@ _Goal: All informational and cleanup commands work._
 ### Step 10: Sidecar Implementation
 _Goal: Background sync mediator works correctly._
 
-- [ ] **10a. Create `src/sidecar.rs`** — `Sidecar` struct. Spawns a thread that: opens SSH connection reading request FIFO (`ssh user@host "while true; do cat <fifo>; done"`), on each line received runs appropriate rsync + hook re-injection (for push), writes ack to ack FIFO via SSH. Provides `shutdown()` method that terminates the SSH process and joins the thread.
-- [ ] **10b. Unit tests with MockRunner** — verify sidecar issues correct SSH command for FIFO reading, verify push request triggers rsync + hook re-injection + ok ack, verify pull request triggers rsync + ok ack, verify rsync failure triggers error ack, verify multiple sequential requests work, verify clean shutdown.
+- [x] **10a. Create `src/sidecar.rs`** — `Sidecar` struct. Spawns a thread that: opens SSH connection reading request FIFO (`ssh user@host "while true; do cat <fifo>; done"`), on each line received runs appropriate rsync + hook re-injection (for push), writes ack to ack FIFO via SSH. Provides `shutdown()` method that terminates the SSH process and joins the thread.
+- [x] **10b. Unit tests with MockRunner** — verify sidecar issues correct SSH command for FIFO reading, verify push request triggers rsync + hook re-injection + ok ack, verify pull request triggers rsync + ok ack, verify rsync failure triggers error ack, verify multiple sequential requests work, verify clean shutdown.
 
 ### Step 11: `start` Command (Main Orchestration)
 _Goal: The primary user workflow works end-to-end._
