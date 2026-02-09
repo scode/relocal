@@ -129,17 +129,17 @@ _Goal: All commands dispatched from main, binary works._
 ### Step 13: Integration Tests
 _Goal: Real SSH/rsync/FIFO tests against localhost. All gated on `RELOCAL_TEST_REMOTE` env var._
 
-- [ ] **13a. Test infrastructure** (`tests/integration/mod.rs`) — helpers for: creating local temp dirs with `tempfile`, generating unique session names, SSH cleanup (remove remote dirs + FIFOs) via `Drop` guard, reading/writing remote files via SSH, skipping when `RELOCAL_TEST_REMOTE` unset.
-- [ ] **13b. Sync push tests** — files appear on remote, deletes propagate, .gitignore respected, config excludes respected, .claude/skills/ synced, .claude/conversations/ not synced, settings.json synced + hooks present.
-- [ ] **13c. Sync pull tests** — files appear locally, deletes propagate, settings.json NOT pulled, .claude/skills/ pulled, .gitignore-matching files not pulled.
-- [ ] **13d. Hook injection tests** — push overwrites settings.json → hooks re-injected, correct session name in hooks.
-- [ ] **13e. FIFO lifecycle tests** — start creates FIFOs, clean shutdown removes them, stale FIFO detection works.
-- [ ] **13f. Sidecar tests** — write push to request FIFO → rsync runs + ok ack, write pull → rsync + ok ack, rsync failure → error ack, multiple sequential requests, clean sidecar shutdown.
-- [ ] **13g. Hook script end-to-end tests** — hook writes to request FIFO, blocks on ack, ok → exit 0, error:msg → exit non-zero + stderr.
-- [ ] **13h. Session lifecycle tests** — start creates dir + FIFOs + pushes + hooks, clean exit cleans FIFOs, destroy removes dir + FIFOs, destroy non-existent → error.
-- [ ] **13i. Remote install tests** — hook script installed at correct path, .fifos/ dir created, re-run is idempotent.
-- [ ] **13j. List/status/nuke tests** — no sessions → empty, multiple sessions listed, .bin/.fifos excluded, status reports correct info, nuke removes everything.
-- [ ] **13k. Localhost-as-remote test** — push/pull work when remote is same machine, remote dir distinct from local temp dir.
+- [x] **13a. Test infrastructure** (`tests/integration/mod.rs`) — helpers for: creating local temp dirs with `tempfile`, generating unique session names, SSH cleanup (remove remote dirs + FIFOs) via `Drop` guard, reading/writing remote files via SSH, skipping when `RELOCAL_TEST_REMOTE` unset.
+- [x] **13b. Sync push tests** — files appear on remote, deletes propagate, .gitignore respected, config excludes respected, .claude/skills/ synced, .claude/conversations/ not synced, settings.json synced + hooks present.
+- [x] **13c. Sync pull tests** — files appear locally, deletes propagate, settings.json NOT pulled, .claude/skills/ pulled, .gitignore-matching files not pulled.
+- [x] **13d. Hook injection tests** — push overwrites settings.json → hooks re-injected, correct session name in hooks.
+- [x] **13e. FIFO lifecycle tests** — start creates FIFOs, clean shutdown removes them, stale FIFO detection works.
+- [x] **13f. Sidecar tests** — write push to request FIFO → rsync runs + ok ack, write pull → rsync + ok ack, rsync failure → error ack, multiple sequential requests, clean sidecar shutdown.
+- [x] **13g. Hook script end-to-end tests** — hook writes to request FIFO, blocks on ack, ok → exit 0, error:msg → exit non-zero + stderr.
+- [x] **13h. Session lifecycle tests** — start creates dir + FIFOs + pushes + hooks, clean exit cleans FIFOs, destroy removes dir + FIFOs, destroy non-existent → error.
+- [x] **13i. Remote install tests** — hook script installed at correct path, .fifos/ dir created, re-run is idempotent.
+- [x] **13j. List/status/nuke tests** — no sessions → empty, multiple sessions listed, .bin/.fifos excluded, status reports correct info, nuke removes everything.
+- [x] **13k. Localhost-as-remote test** — push/pull work when remote is same machine, remote dir distinct from local temp dir.
 
 ### Step 14: Final Polish + Spec Reconciliation
 _Goal: Implementation matches SPEC.md, code is clean._
