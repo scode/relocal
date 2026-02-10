@@ -5,7 +5,11 @@
 //! `RELOCAL_TEST_REMOTE` environment variable — when unset, all tests
 //! are `#[ignore]`d.
 //!
-//! Run with: `RELOCAL_TEST_REMOTE=$USER@localhost cargo test -- --ignored`
+//! Tests share remote state (`~/relocal/`) and must run sequentially:
+//!
+//! ```sh
+//! RELOCAL_TEST_REMOTE=$USER@localhost cargo test -- --ignored --test-threads=1
+//! ```
 
 use relocal::commands::{destroy, nuke, start, sync};
 use relocal::config::Config;
@@ -717,12 +721,18 @@ fn hook_script_ok_ack_exits_zero() {
     );
     runner.run_ssh(&remote, &write_cmd).unwrap();
 
-    // In a background process, write "ok" to the ack FIFO after a short delay
-    // (simulating the sidecar). Meanwhile the hook script blocks on ack.
-    let ack_cmd = format!("sleep 1 && echo ok > {}", ssh::fifo_ack_path(&session));
-    runner
-        .run_ssh(&remote, &format!("nohup bash -c '{ack_cmd}' &>/dev/null &"))
-        .unwrap();
+    // Simulate sidecar in a background thread: read request FIFO, write ack.
+    let bg_remote = remote.clone();
+    let bg_session = session.clone();
+    let sidecar_thread = std::thread::spawn(move || {
+        let r = ProcessRunner;
+        let cmd = format!(
+            "cat {} > /dev/null && echo ok > {}",
+            ssh::fifo_request_path(&bg_session),
+            ssh::fifo_ack_path(&bg_session)
+        );
+        r.run_ssh(&bg_remote, &cmd).unwrap();
+    });
 
     // Run the hook script — it writes to request FIFO and reads from ack FIFO
     let result = runner.run_ssh(
@@ -730,12 +740,7 @@ fn hook_script_ok_ack_exits_zero() {
         &format!("RELOCAL_SESSION={session} {} push", ssh::hook_script_path()),
     );
 
-    // Drain the request FIFO (the hook wrote to it)
-    let _ = runner.run_ssh(
-        &remote,
-        &format!("cat {} || true", ssh::fifo_request_path(&session)),
-    );
-
+    sidecar_thread.join().unwrap();
     assert!(result.unwrap().status.success());
 }
 
@@ -765,25 +770,25 @@ fn hook_script_error_ack_exits_nonzero() {
     );
     runner.run_ssh(&remote, &write_cmd).unwrap();
 
-    // Write error ack
-    let ack_cmd = format!(
-        "sleep 1 && echo 'error:sync failed' > {}",
-        ssh::fifo_ack_path(&session)
-    );
-    runner
-        .run_ssh(&remote, &format!("nohup bash -c '{ack_cmd}' &>/dev/null &"))
-        .unwrap();
+    // Simulate sidecar in a background thread: read request FIFO, write error ack.
+    let bg_remote = remote.clone();
+    let bg_session = session.clone();
+    let sidecar_thread = std::thread::spawn(move || {
+        let r = ProcessRunner;
+        let cmd = format!(
+            "cat {} > /dev/null && echo 'error:sync failed' > {}",
+            ssh::fifo_request_path(&bg_session),
+            ssh::fifo_ack_path(&bg_session)
+        );
+        r.run_ssh(&bg_remote, &cmd).unwrap();
+    });
 
     let result = runner.run_ssh(
         &remote,
         &format!("RELOCAL_SESSION={session} {} pull", ssh::hook_script_path()),
     );
 
-    let _ = runner.run_ssh(
-        &remote,
-        &format!("cat {} || true", ssh::fifo_request_path(&session)),
-    );
-
+    sidecar_thread.join().unwrap();
     let output = result.unwrap();
     assert!(!output.status.success());
     assert!(output.stderr.contains("sync failed"));
@@ -984,9 +989,6 @@ fn nuke_removes_everything() {
     nuke::run(&runner, &config, false).unwrap();
 
     assert!(!remote_file_exists(&remote, "~/relocal"));
-
-    // Re-create relocal dir for other tests that may be running
-    // (nuke is destructive to all sessions)
 }
 
 // ---------------------------------------------------------------------------
