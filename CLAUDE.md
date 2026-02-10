@@ -28,6 +28,12 @@ ALWAYS run the following after you're done writing code, and fix any issues befo
 2. `cargo clippy` — fix all warnings (dead_code warnings for not-yet-used items are acceptable)
 3. `cargo test` — all tests must pass
 
+Integration tests share remote state and must run sequentially:
+
+```sh
+RELOCAL_TEST_REMOTE=$USER@localhost cargo test -- --ignored --test-threads=1
+```
+
 ## Before Finishing Work
 
 Before considering any task complete, verify the implementation still satisfies `SPEC.md`. Read the relevant spec sections and check that behavior, CLI interface, sync mechanics, hook handling, and test requirements all match. If the implementation deviates from the spec, ask the user whether to update the spec or change the code — do not silently leave them out of sync.
