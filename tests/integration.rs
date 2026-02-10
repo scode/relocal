@@ -900,14 +900,18 @@ fn list_shows_sessions_and_excludes_dot_dirs() {
     runner.run_ssh(&remote, &ssh::mkdir_bin_dir()).unwrap();
     runner.run_ssh(&remote, &ssh::mkdir_fifos_dir()).unwrap();
 
-    // List sessions via SSH
+    // List sessions via SSH — output format is "name\tsize" per line
     let output = runner.run_ssh(&remote, &ssh::list_sessions()).unwrap();
-    let sessions: Vec<&str> = output.stdout.lines().collect();
+    let session_names: Vec<&str> = output
+        .stdout
+        .lines()
+        .filter_map(|line| line.split('\t').next())
+        .collect();
 
-    assert!(sessions.contains(&session1.as_str()));
-    assert!(sessions.contains(&session2.as_str()));
-    assert!(!sessions.contains(&".bin"));
-    assert!(!sessions.contains(&".fifos"));
+    assert!(session_names.contains(&session1.as_str()));
+    assert!(session_names.contains(&session2.as_str()));
+    assert!(!session_names.contains(&".bin"));
+    assert!(!session_names.contains(&".fifos"));
 }
 
 #[test]

@@ -111,7 +111,7 @@ pub fn rm_relocal_dir() -> String {
 /// Output format: `<name>\t<size>` per line, e.g. `my-session\t4.0K`.
 pub fn list_sessions() -> String {
     format!(
-        "cd {RELOCAL_DIR} 2>/dev/null && for d in $(ls -1 | grep -v '^\\.bin$' | grep -v '^\\.fifos$'); do size=$(du -sh \"$d\" 2>/dev/null | cut -f1); echo \"$d\\t$size\"; done"
+        "cd {RELOCAL_DIR} 2>/dev/null && for d in $(ls -1 | grep -v '^\\.bin$' | grep -v '^\\.fifos$'); do size=$(du -sh \"$d\" 2>/dev/null | cut -f1); printf '%s\\t%s\\n' \"$d\" \"$size\"; done"
     )
 }
 
