@@ -97,8 +97,9 @@ pub fn setup(
     eprintln!("Creating remote working directory...");
     runner.run_ssh(&config.remote, &ssh::mkdir_work_dir(session_name))?;
 
-    // 3. Create FIFOs
+    // 3. Create FIFOs (ensure the .fifos dir exists first)
     eprintln!("Creating FIFOs...");
+    runner.run_ssh(&config.remote, &ssh::mkdir_fifos_dir())?;
     runner.run_ssh(&config.remote, &ssh::create_fifos(session_name))?;
 
     // 4. Initial push
@@ -162,7 +163,9 @@ mod tests {
         mock.add_response(MockResponse::Ok("/usr/local/bin/claude\n".into()));
         // 2. mkdir_work_dir
         mock.add_response(MockResponse::Ok(String::new()));
-        // 3. create_fifos
+        // 3a. mkdir_fifos_dir
+        mock.add_response(MockResponse::Ok(String::new()));
+        // 3b. create_fifos
         mock.add_response(MockResponse::Ok(String::new()));
         // 4. sync_push: rsync
         mock.add_response(MockResponse::Ok(String::new()));
@@ -174,8 +177,8 @@ mod tests {
         setup(&mock, &test_config(), "my-session", &repo_root(), false).unwrap();
 
         let inv = mock.invocations();
-        // check_fifos(1) + claude_check(1) + mkdir(1) + create_fifos(1) + rsync(1) + read_settings(1) + write_settings(1) = 7
-        assert_eq!(inv.len(), 7);
+        // check_fifos(1) + claude_check(1) + mkdir(1) + mkdir_fifos(1) + create_fifos(1) + rsync(1) + read_settings(1) + write_settings(1) = 8
+        assert_eq!(inv.len(), 8);
 
         // Verify order: check fifos
         match &inv[0] {
@@ -194,7 +197,7 @@ mod tests {
             _ => panic!("expected Ssh for claude check"),
         }
 
-        // mkdir
+        // mkdir work dir
         match &inv[2] {
             Invocation::Ssh { command, .. } => {
                 assert!(command.contains("mkdir -p"));
@@ -203,8 +206,17 @@ mod tests {
             _ => panic!("expected Ssh for mkdir"),
         }
 
-        // create fifos
+        // mkdir fifos dir
         match &inv[3] {
+            Invocation::Ssh { command, .. } => {
+                assert!(command.contains("mkdir -p"));
+                assert!(command.contains(".fifos"));
+            }
+            _ => panic!("expected Ssh for mkdir fifos"),
+        }
+
+        // create fifos
+        match &inv[4] {
             Invocation::Ssh { command, .. } => {
                 assert!(command.contains("mkfifo"));
                 assert!(command.contains("my-session-request"));
@@ -214,10 +226,10 @@ mod tests {
         }
 
         // rsync (push)
-        assert!(matches!(&inv[4], Invocation::Rsync { .. }));
+        assert!(matches!(&inv[5], Invocation::Rsync { .. }));
 
         // hook reinjection (read + write)
-        match &inv[6] {
+        match &inv[7] {
             Invocation::Ssh { command, .. } => {
                 assert!(command.contains("relocal-hook.sh"));
             }
@@ -279,7 +291,8 @@ mod tests {
         let mock = MockRunner::new();
         mock.add_response(MockResponse::Fail(String::new())); // fifo check
         mock.add_response(MockResponse::Ok(String::new())); // claude check
-        mock.add_response(MockResponse::Ok(String::new())); // mkdir
+        mock.add_response(MockResponse::Ok(String::new())); // mkdir work dir
+        mock.add_response(MockResponse::Ok(String::new())); // mkdir fifos dir
         mock.add_response(MockResponse::Ok(String::new())); // create fifos
         mock.add_response(MockResponse::Ok(String::new())); // rsync
         mock.add_response(MockResponse::Fail(String::new())); // read settings
@@ -306,7 +319,8 @@ mod tests {
         let mock = MockRunner::new();
         mock.add_response(MockResponse::Fail(String::new())); // fifo check
         mock.add_response(MockResponse::Ok(String::new())); // claude check
-        mock.add_response(MockResponse::Ok(String::new())); // mkdir
+        mock.add_response(MockResponse::Ok(String::new())); // mkdir work dir
+        mock.add_response(MockResponse::Ok(String::new())); // mkdir fifos dir
         mock.add_response(MockResponse::Ok(String::new())); // create fifos
         mock.add_response(MockResponse::Ok(String::new())); // rsync
         mock.add_response(MockResponse::Fail(String::new())); // read settings
@@ -315,7 +329,7 @@ mod tests {
         setup(&mock, &test_config(), "s1", &repo_root(), true).unwrap();
 
         let inv = mock.invocations();
-        match &inv[4] {
+        match &inv[5] {
             Invocation::Rsync { args } => {
                 assert!(args.contains(&"--progress".to_string()));
             }
@@ -358,13 +372,14 @@ mod tests {
         let mock = MockRunner::new();
         mock.add_response(MockResponse::Fail(String::new())); // fifo check
         mock.add_response(MockResponse::Ok(String::new())); // claude check
-        mock.add_response(MockResponse::Ok(String::new())); // mkdir
+        mock.add_response(MockResponse::Ok(String::new())); // mkdir work dir
+        mock.add_response(MockResponse::Ok(String::new())); // mkdir fifos dir
         mock.add_response(MockResponse::Err("mkfifo failed".into())); // create fifos
 
         let result = setup(&mock, &test_config(), "s1", &repo_root(), false);
         assert!(result.is_err());
 
         let inv = mock.invocations();
-        assert_eq!(inv.len(), 4);
+        assert_eq!(inv.len(), 5);
     }
 }
