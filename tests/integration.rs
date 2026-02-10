@@ -81,9 +81,7 @@ fn read_remote_file(remote: &str, path: &str) -> Option<String> {
 /// Writes a file on the remote via SSH.
 fn write_remote_file(remote: &str, path: &str, content: &str) {
     let runner = ProcessRunner;
-    let cmd = format!(
-        "mkdir -p $(dirname {path}) && cat > {path} << 'RELOCAL_TEST_EOF'\n{content}\nRELOCAL_TEST_EOF"
-    );
+    let cmd = format!("mkdir -p $(dirname {path}) && printf '%s' '{content}' > {path}");
     runner.run_ssh(remote, &cmd).expect("write remote file");
 }
 
@@ -101,6 +99,15 @@ fn remote_dir(session: &str) -> String {
     ssh::remote_work_dir(session)
 }
 
+/// Ensures the remote session directory exists (for tests that call sync directly
+/// without going through `start::setup`).
+fn ensure_remote_session_dir(remote: &str, session: &str) {
+    let runner = ProcessRunner;
+    runner
+        .run_ssh(remote, &ssh::mkdir_work_dir(session))
+        .expect("create remote session dir");
+}
+
 // ---------------------------------------------------------------------------
 // 13b. Sync push tests
 // ---------------------------------------------------------------------------
@@ -116,6 +123,7 @@ fn push_files_appear_on_remote() {
         session: session.clone(),
     };
     let runner = ProcessRunner;
+    ensure_remote_session_dir(&remote, &session);
 
     // Create a local file
     std::fs::write(dir.path().join("hello.txt"), "world").unwrap();
@@ -137,6 +145,7 @@ fn push_deletes_propagate() {
         session: session.clone(),
     };
     let runner = ProcessRunner;
+    ensure_remote_session_dir(&remote, &session);
 
     // Push a file
     std::fs::write(dir.path().join("delete-me.txt"), "temp").unwrap();
@@ -166,6 +175,7 @@ fn push_respects_gitignore() {
         session: session.clone(),
     };
     let runner = ProcessRunner;
+    ensure_remote_session_dir(&remote, &session);
 
     std::fs::write(dir.path().join(".gitignore"), "*.log\n").unwrap();
     std::fs::write(dir.path().join("app.log"), "log data").unwrap();
@@ -194,6 +204,7 @@ fn push_respects_config_excludes() {
         session: session.clone(),
     };
     let runner = ProcessRunner;
+    ensure_remote_session_dir(&remote, &session);
 
     std::fs::write(dir.path().join(".env"), "SECRET=x").unwrap();
     std::fs::create_dir(dir.path().join("secrets")).unwrap();
@@ -227,6 +238,7 @@ fn push_syncs_claude_skills_but_not_conversations() {
         session: session.clone(),
     };
     let runner = ProcessRunner;
+    ensure_remote_session_dir(&remote, &session);
 
     // Create .claude/skills/ (synced) and .claude/conversations/ (not synced)
     std::fs::create_dir_all(dir.path().join(".claude/skills")).unwrap();
@@ -257,6 +269,7 @@ fn push_syncs_settings_json_with_hooks() {
         session: session.clone(),
     };
     let runner = ProcessRunner;
+    ensure_remote_session_dir(&remote, &session);
 
     std::fs::write(dir.path().join("file.txt"), "data").unwrap();
     sync::sync_push(&runner, &config, &session, dir.path(), false).unwrap();
@@ -287,6 +300,7 @@ fn pull_files_appear_locally() {
         session: session.clone(),
     };
     let runner = ProcessRunner;
+    ensure_remote_session_dir(&remote, &session);
 
     // Push first to create remote dir
     sync::sync_push(&runner, &config, &session, dir.path(), false).unwrap();
@@ -315,6 +329,7 @@ fn pull_deletes_propagate() {
         session: session.clone(),
     };
     let runner = ProcessRunner;
+    ensure_remote_session_dir(&remote, &session);
 
     // Push two files
     std::fs::write(dir.path().join("keep.txt"), "keep").unwrap();
@@ -343,6 +358,7 @@ fn pull_excludes_settings_json() {
         session: session.clone(),
     };
     let runner = ProcessRunner;
+    ensure_remote_session_dir(&remote, &session);
 
     // Push to create remote dir + hooks
     sync::sync_push(&runner, &config, &session, dir.path(), false).unwrap();
@@ -370,6 +386,7 @@ fn pull_syncs_claude_skills() {
         session: session.clone(),
     };
     let runner = ProcessRunner;
+    ensure_remote_session_dir(&remote, &session);
 
     // Push to create remote dir
     sync::sync_push(&runner, &config, &session, dir.path(), false).unwrap();
@@ -403,6 +420,7 @@ fn push_reinjects_hooks_after_overwrite() {
         session: session.clone(),
     };
     let runner = ProcessRunner;
+    ensure_remote_session_dir(&remote, &session);
 
     // First push installs hooks
     sync::sync_push(&runner, &config, &session, dir.path(), false).unwrap();
@@ -442,6 +460,7 @@ fn hooks_reference_correct_session_name() {
         session: session.clone(),
     };
     let runner = ProcessRunner;
+    ensure_remote_session_dir(&remote, &session);
 
     sync::sync_push(&runner, &config, &session, dir.path(), false).unwrap();
 
@@ -990,6 +1009,8 @@ fn localhost_push_pull_roundtrip() {
     std::fs::write(dir.path().join("local.txt"), "local content").unwrap();
     std::fs::create_dir_all(dir.path().join("subdir")).unwrap();
     std::fs::write(dir.path().join("subdir/nested.txt"), "nested").unwrap();
+
+    ensure_remote_session_dir(&remote, &session);
 
     // Push
     sync::sync_push(&runner, &config, &session, dir.path(), false).unwrap();
