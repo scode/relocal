@@ -21,20 +21,33 @@ fn hook_command(session_name: &str, direction: &str) -> String {
     format!("RELOCAL_SESSION={session_name} ~/relocal/.bin/relocal-hook.sh {direction}")
 }
 
-/// Builds a single relocal hook entry as a JSON value.
+/// Builds a relocal matcher group as a JSON value.
+///
+/// Claude hooks use a nested format where each array element is a matcher
+/// group containing a `hooks` array of handler objects.
 fn relocal_hook_entry(session_name: &str, direction: &str) -> Value {
     json!({
-        "type": "command",
-        "command": hook_command(session_name, direction)
+        "hooks": [
+            {
+                "type": "command",
+                "command": hook_command(session_name, direction)
+            }
+        ]
     })
 }
 
-/// Returns true if a hook entry is a relocal-managed hook.
+/// Returns true if a matcher group contains a relocal-managed hook.
 fn is_relocal_entry(entry: &Value) -> bool {
     entry
-        .get("command")
-        .and_then(|v| v.as_str())
-        .is_some_and(|s| s.contains(RELOCAL_HOOK_MARKER))
+        .get("hooks")
+        .and_then(|v| v.as_array())
+        .is_some_and(|hooks| {
+            hooks.iter().any(|h| {
+                h.get("command")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| s.contains(RELOCAL_HOOK_MARKER))
+            })
+        })
 }
 
 /// Ensures the hook array contains exactly one relocal entry with the correct
@@ -124,11 +137,12 @@ mod tests {
 
         assert_eq!(submit.len(), 1);
         assert_eq!(stop.len(), 1);
-        assert!(submit[0]["command"]
+        // Each entry is a matcher group with a "hooks" array inside
+        assert!(submit[0]["hooks"][0]["command"]
             .as_str()
             .unwrap()
             .contains("relocal-hook.sh push"));
-        assert!(stop[0]["command"]
+        assert!(stop[0]["hooks"][0]["command"]
             .as_str()
             .unwrap()
             .contains("relocal-hook.sh pull"));
@@ -172,10 +186,10 @@ mod tests {
         let existing = json!({
             "hooks": {
                 "UserPromptSubmit": [
-                    {"type": "command", "command": "user-script.sh"}
+                    {"hooks": [{"type": "command", "command": "user-script.sh"}]}
                 ],
                 "Stop": [
-                    {"type": "command", "command": "other-script.sh"}
+                    {"hooks": [{"type": "command", "command": "other-script.sh"}]}
                 ]
             }
         });
@@ -186,14 +200,14 @@ mod tests {
 
         // User hooks preserved, relocal appended
         assert_eq!(submit.len(), 2);
-        assert_eq!(submit[0]["command"], "user-script.sh");
-        assert!(submit[1]["command"]
+        assert_eq!(submit[0]["hooks"][0]["command"], "user-script.sh");
+        assert!(submit[1]["hooks"][0]["command"]
             .as_str()
             .unwrap()
             .contains("relocal-hook.sh"));
 
         assert_eq!(stop.len(), 2);
-        assert_eq!(stop[0]["command"], "other-script.sh");
+        assert_eq!(stop[0]["hooks"][0]["command"], "other-script.sh");
     }
 
     #[test]
@@ -201,10 +215,10 @@ mod tests {
         let existing = json!({
             "hooks": {
                 "UserPromptSubmit": [
-                    {"type": "command", "command": "RELOCAL_SESSION=old ~/relocal/.bin/relocal-hook.sh push"}
+                    {"hooks": [{"type": "command", "command": "RELOCAL_SESSION=old ~/relocal/.bin/relocal-hook.sh push"}]}
                 ],
                 "Stop": [
-                    {"type": "command", "command": "RELOCAL_SESSION=old ~/relocal/.bin/relocal-hook.sh pull"}
+                    {"hooks": [{"type": "command", "command": "RELOCAL_SESSION=old ~/relocal/.bin/relocal-hook.sh pull"}]}
                 ]
             }
         });
@@ -216,11 +230,11 @@ mod tests {
         // Still one entry each (updated in place, not duplicated)
         assert_eq!(submit.len(), 1);
         assert_eq!(stop.len(), 1);
-        assert!(submit[0]["command"]
+        assert!(submit[0]["hooks"][0]["command"]
             .as_str()
             .unwrap()
             .contains("RELOCAL_SESSION=new-session"));
-        assert!(stop[0]["command"]
+        assert!(stop[0]["hooks"][0]["command"]
             .as_str()
             .unwrap()
             .contains("RELOCAL_SESSION=new-session"));
@@ -231,9 +245,9 @@ mod tests {
         let existing = json!({
             "hooks": {
                 "UserPromptSubmit": [
-                    {"type": "command", "command": "first.sh"},
-                    {"type": "command", "command": "RELOCAL_SESSION=old ~/relocal/.bin/relocal-hook.sh push"},
-                    {"type": "command", "command": "third.sh"}
+                    {"hooks": [{"type": "command", "command": "first.sh"}]},
+                    {"hooks": [{"type": "command", "command": "RELOCAL_SESSION=old ~/relocal/.bin/relocal-hook.sh push"}]},
+                    {"hooks": [{"type": "command", "command": "third.sh"}]}
                 ]
             }
         });
@@ -241,12 +255,12 @@ mod tests {
 
         let submit = result["hooks"]["UserPromptSubmit"].as_array().unwrap();
         assert_eq!(submit.len(), 3);
-        assert_eq!(submit[0]["command"], "first.sh");
-        assert!(submit[1]["command"]
+        assert_eq!(submit[0]["hooks"][0]["command"], "first.sh");
+        assert!(submit[1]["hooks"][0]["command"]
             .as_str()
             .unwrap()
             .contains("relocal-hook.sh"));
-        assert_eq!(submit[2]["command"], "third.sh");
+        assert_eq!(submit[2]["hooks"][0]["command"], "third.sh");
     }
 
     #[test]
@@ -265,7 +279,7 @@ mod tests {
     #[test]
     fn session_name_interpolated() {
         let result = merge_hooks(None, "my-proj");
-        let cmd = result["hooks"]["UserPromptSubmit"][0]["command"]
+        let cmd = result["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
             .as_str()
             .unwrap();
         assert!(cmd.contains("RELOCAL_SESSION=my-proj"));

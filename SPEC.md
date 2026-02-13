@@ -344,14 +344,22 @@ The `.claude/settings.json` in the remote working copy will contain:
   "hooks": {
     "UserPromptSubmit": [
       {
-        "type": "command",
-        "command": "RELOCAL_SESSION=<session-name> ~/relocal/.bin/relocal-hook.sh push"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "RELOCAL_SESSION=<session-name> ~/relocal/.bin/relocal-hook.sh push"
+          }
+        ]
       }
     ],
     "Stop": [
       {
-        "type": "command",
-        "command": "RELOCAL_SESSION=<session-name> ~/relocal/.bin/relocal-hook.sh pull"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "RELOCAL_SESSION=<session-name> ~/relocal/.bin/relocal-hook.sh pull"
+          }
+        ]
       }
     ]
   }
@@ -365,11 +373,12 @@ The hook installation must handle existing `.claude/settings.json` content:
 - If the file does not exist, create it with the hook configuration.
 - If the file exists but has no `hooks` key, add the `hooks` key.
 - If `hooks` exists but has no `UserPromptSubmit` or `Stop` arrays, add them.
-- If the arrays exist, check for existing relocal hook entries. Relocal hooks
-  are identified by the presence of `relocal-hook.sh` in the command string.
-  - If a relocal entry exists, update it in place (to handle session name or
-    script path changes).
-  - If no relocal entry exists, append the relocal hook to the array.
+- If the arrays exist, check for existing relocal matcher groups. Relocal
+  matcher groups are identified by the presence of `relocal-hook.sh` in any
+  command string within the group's `hooks` array.
+  - If a relocal matcher group exists, update it in place (to handle session
+    name or script path changes).
+  - If no relocal matcher group exists, append a new one to the array.
 
 This ensures user-defined hooks in the same arrays are preserved, and repeated
 runs of `relocal start` or `relocal sync push` do not duplicate entries.
@@ -551,8 +560,8 @@ remote host.
 - Existing file with no `hooks` key → `hooks` key added, all other keys
   preserved.
 - Existing `hooks` with no `UserPromptSubmit`/`Stop` → arrays added.
-- Existing arrays with no relocal entry → relocal hook appended.
-- Existing arrays with a relocal entry → entry updated in place.
+- Existing arrays with no relocal matcher group → relocal matcher group appended.
+- Existing arrays with a relocal matcher group → matcher group updated in place.
 - User-defined hooks in the same arrays are preserved and not reordered.
 - Other top-level keys in `settings.json` are preserved.
 - Session name is correctly interpolated into hook commands.
