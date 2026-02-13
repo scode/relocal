@@ -1,8 +1,8 @@
 //! `relocal sync push` / `relocal sync pull` — manual sync commands.
 //!
-//! Push runs rsync (local → remote) and then re-injects hooks into the remote
-//! `.claude/settings.json` (since the push may have overwritten it).
-//! Pull runs rsync (remote → local) with no hook re-injection.
+//! Push runs rsync (local → remote). The `.claude/` directory is excluded from
+//! rsync; hooks are managed separately via [`inject_hooks`].
+//! Pull runs rsync (remote → local).
 
 use std::path::Path;
 
@@ -13,7 +13,7 @@ use crate::rsync::{build_rsync_args, Direction};
 use crate::runner::CommandRunner;
 use crate::ssh;
 
-/// Pushes local files to the remote, then re-injects hooks.
+/// Pushes local files to the remote.
 pub fn sync_push(
     runner: &dyn CommandRunner,
     config: &Config,
@@ -30,8 +30,6 @@ pub fn sync_push(
             message: rsync_result.stderr,
         });
     }
-
-    reinject_hooks(runner, config, session_name)?;
 
     eprintln!("Push complete.");
     Ok(())
@@ -74,7 +72,7 @@ pub fn sync_pull(
 }
 
 /// Reads the remote `.claude/settings.json`, merges relocal hooks, and writes
-/// it back. Called after every push to ensure hooks survive being overwritten.
+/// it back. Called once during session setup to install hooks.
 pub fn reinject_hooks(
     runner: &dyn CommandRunner,
     config: &Config,
@@ -121,15 +119,11 @@ mod tests {
         let mock = MockRunner::new();
         // rsync
         mock.add_response(MockResponse::Ok(String::new()));
-        // read settings.json (not found)
-        mock.add_response(MockResponse::Fail(String::new()));
-        // write settings.json
-        mock.add_response(MockResponse::Ok(String::new()));
 
         sync_push(&mock, &test_config(), "s1", &repo_root(), false).unwrap();
 
         let inv = mock.invocations();
-        // First invocation should be rsync
+        assert_eq!(inv.len(), 1);
         match &inv[0] {
             Invocation::Rsync { args } => {
                 // Verify push direction: local path first, remote path second
@@ -137,8 +131,8 @@ mod tests {
                 assert!(last.contains("user@host:"));
                 let second_last = &args[args.len() - 2];
                 assert!(second_last.starts_with("/home/user/my-project/"));
-                // Verify settings.json is included (push direction)
-                assert!(args.contains(&"--include=.claude/settings.json".to_string()));
+                // .claude/ excluded entirely
+                assert!(args.contains(&"--exclude=.claude/".to_string()));
             }
             _ => panic!("expected Rsync, got {:?}", inv[0]),
         }
@@ -195,95 +189,23 @@ mod tests {
     }
 
     #[test]
-    fn push_reinjects_hooks_after_rsync() {
+    fn push_does_not_reinject_hooks() {
         let mock = MockRunner::new();
-        // rsync
-        mock.add_response(MockResponse::Ok(String::new()));
-        // read settings.json — return existing content
-        mock.add_response(MockResponse::Ok(
-            r#"{"allowedTools": ["bash"]}"#.to_string(),
-        ));
-        // write settings.json
-        mock.add_response(MockResponse::Ok(String::new()));
-
-        sync_push(&mock, &test_config(), "my-session", &repo_root(), false).unwrap();
-
-        let inv = mock.invocations();
-        // rsync (1) + read settings.json (1) + write settings.json (1) = 3
-        assert_eq!(inv.len(), 3);
-
-        // Second invocation: read settings.json
-        match &inv[1] {
-            Invocation::Ssh { command, .. } => {
-                assert!(command.contains("settings.json"));
-                assert!(command.contains("cat"));
-            }
-            _ => panic!("expected Ssh for read, got {:?}", inv[1]),
-        }
-
-        // Third invocation: write settings.json with merged hooks
-        match &inv[2] {
-            Invocation::Ssh { command, .. } => {
-                assert!(command.contains("settings.json"));
-                assert!(command.contains("relocal-hook.sh"));
-                assert!(command.contains("my-session"));
-                // Verify original keys preserved
-                assert!(command.contains("allowedTools"));
-            }
-            _ => panic!("expected Ssh for write, got {:?}", inv[2]),
-        }
-    }
-
-    #[test]
-    fn push_creates_hooks_when_no_settings_json() {
-        let mock = MockRunner::new();
-        // rsync
-        mock.add_response(MockResponse::Ok(String::new()));
-        // read settings.json — fails (file doesn't exist)
-        mock.add_response(MockResponse::Fail(String::new()));
-        // write settings.json
+        // rsync only
         mock.add_response(MockResponse::Ok(String::new()));
 
         sync_push(&mock, &test_config(), "s1", &repo_root(), false).unwrap();
 
         let inv = mock.invocations();
-        assert_eq!(inv.len(), 3);
-
-        // Write should still happen with fresh hooks
-        match &inv[2] {
-            Invocation::Ssh { command, .. } => {
-                assert!(command.contains("relocal-hook.sh push"));
-                assert!(command.contains("relocal-hook.sh pull"));
-            }
-            _ => panic!("expected Ssh for write, got {:?}", inv[2]),
-        }
-    }
-
-    #[test]
-    fn pull_does_not_reinject_hooks() {
-        let mock = MockRunner::new();
-        // git fsck
-        mock.add_response(MockResponse::Ok(String::new()));
-        // rsync only
-        mock.add_response(MockResponse::Ok(String::new()));
-
-        sync_pull(&mock, &test_config(), "s1", &repo_root(), false).unwrap();
-
-        let inv = mock.invocations();
-        // git fsck (1) + rsync (1) — no SSH calls for settings.json
-        assert_eq!(inv.len(), 2);
-        assert!(matches!(&inv[0], Invocation::Ssh { .. }));
-        assert!(matches!(&inv[1], Invocation::Rsync { .. }));
+        // Just rsync, no settings.json reads/writes
+        assert_eq!(inv.len(), 1);
+        assert!(matches!(&inv[0], Invocation::Rsync { .. }));
     }
 
     #[test]
     fn push_verbose_passes_through() {
         let mock = MockRunner::new();
         // rsync
-        mock.add_response(MockResponse::Ok(String::new()));
-        // read settings.json
-        mock.add_response(MockResponse::Fail(String::new()));
-        // write settings.json
         mock.add_response(MockResponse::Ok(String::new()));
 
         sync_push(&mock, &test_config(), "s1", &repo_root(), true).unwrap();

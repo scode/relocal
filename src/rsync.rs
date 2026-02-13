@@ -19,17 +19,8 @@ pub enum Direction {
 
 /// Builds the complete rsync argument list for a sync operation.
 ///
-/// The `.claude/` filtering is the trickiest part: rsync processes filter rules
-/// in order, so we must include specific subdirs *before* excluding `.claude/`
-/// wholesale. The include chain looks like:
-///
-/// ```text
-/// --include=.claude/
-/// --include=.claude/skills/
-/// --include=.claude/skills/**
-/// --include=.claude/settings.json   (push only)
-/// --exclude=.claude/**
-/// ```
+/// The `.claude/` directory is excluded entirely — hook configuration is managed
+/// separately via SSH (see [`reinject_hooks`](crate::commands::sync::reinject_hooks)).
 pub fn build_rsync_args(
     config: &Config,
     direction: Direction,
@@ -51,23 +42,8 @@ pub fn build_rsync_args(
         args.push(format!("--exclude={pattern}"));
     }
 
-    // .claude/ directory filtering: include specific subdirs, then exclude the rest.
-    // The parent directory must be included first for rsync to descend into it.
-    args.push("--include=.claude/".to_string());
-
-    for dir in &config.claude_sync_dirs {
-        // Include the subdir itself and everything under it
-        args.push(format!("--include=.claude/{dir}/"));
-        args.push(format!("--include=.claude/{dir}/**"));
-    }
-
-    // settings.json: included on push, excluded on pull
-    if direction == Direction::Push {
-        args.push("--include=.claude/settings.json".to_string());
-    }
-
-    // Exclude everything else under .claude/
-    args.push("--exclude=.claude/**".to_string());
+    // Exclude .claude/ entirely — hooks are managed via SSH, not rsync.
+    args.push("--exclude=.claude/".to_string());
 
     // Verbose mode adds progress
     if verbose {
@@ -133,37 +109,15 @@ exclude = [".env", "secrets/"]
     }
 
     #[test]
-    fn push_claude_handling() {
+    fn claude_dir_excluded() {
         let args = build_rsync_args(&minimal_config(), Direction::Push, "s1", &root(), false);
-
-        // Parent dir included so rsync descends
-        assert!(args.contains(&"--include=.claude/".to_string()));
-
-        // Default sync dirs included
-        assert!(args.contains(&"--include=.claude/skills/".to_string()));
-        assert!(args.contains(&"--include=.claude/skills/**".to_string()));
-        assert!(args.contains(&"--include=.claude/commands/".to_string()));
-        assert!(args.contains(&"--include=.claude/plugins/".to_string()));
-
-        // settings.json included on push
-        assert!(args.contains(&"--include=.claude/settings.json".to_string()));
-
-        // Everything else excluded
-        assert!(args.contains(&"--exclude=.claude/**".to_string()));
+        assert!(args.contains(&"--exclude=.claude/".to_string()));
     }
 
     #[test]
-    fn pull_excludes_settings_json() {
+    fn claude_dir_excluded_on_pull() {
         let args = build_rsync_args(&minimal_config(), Direction::Pull, "s1", &root(), false);
-
-        // Sync dirs still included
-        assert!(args.contains(&"--include=.claude/skills/".to_string()));
-
-        // settings.json NOT included on pull
-        assert!(!args.contains(&"--include=.claude/settings.json".to_string()));
-
-        // Everything else excluded
-        assert!(args.contains(&"--exclude=.claude/**".to_string()));
+        assert!(args.contains(&"--exclude=.claude/".to_string()));
     }
 
     #[test]
@@ -193,43 +147,5 @@ exclude = [".env", "secrets/"]
     fn non_verbose_no_progress() {
         let args = build_rsync_args(&minimal_config(), Direction::Push, "s1", &root(), false);
         assert!(!args.contains(&"--progress".to_string()));
-    }
-
-    #[test]
-    fn non_default_claude_sync_dirs() {
-        let config = Config::parse(
-            r#"
-remote = "user@host"
-claude_sync_dirs = ["custom-dir"]
-"#,
-        )
-        .unwrap();
-        let args = build_rsync_args(&config, Direction::Push, "s1", &root(), false);
-
-        // Custom dir included
-        assert!(args.contains(&"--include=.claude/custom-dir/".to_string()));
-        assert!(args.contains(&"--include=.claude/custom-dir/**".to_string()));
-
-        // Default dirs NOT included
-        assert!(!args.contains(&"--include=.claude/skills/".to_string()));
-        assert!(!args.contains(&"--include=.claude/commands/".to_string()));
-        assert!(!args.contains(&"--include=.claude/plugins/".to_string()));
-    }
-
-    #[test]
-    fn include_order_before_exclude() {
-        let args = build_rsync_args(&minimal_config(), Direction::Push, "s1", &root(), false);
-        let include_claude_pos = args.iter().position(|a| a == "--include=.claude/").unwrap();
-        let include_settings_pos = args
-            .iter()
-            .position(|a| a == "--include=.claude/settings.json")
-            .unwrap();
-        let exclude_pos = args
-            .iter()
-            .position(|a| a == "--exclude=.claude/**")
-            .unwrap();
-
-        assert!(include_claude_pos < exclude_pos);
-        assert!(include_settings_pos < exclude_pos);
     }
 }

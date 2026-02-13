@@ -45,9 +45,6 @@ exclude = [".env", "secrets/"]
 # APT packages to install on the remote during `relocal remote install`.
 # In addition to the always-installed baseline (see Remote Installation).
 apt_packages = ["libssl-dev", "pkg-config"]
-
-# Which subdirectories of .claude/ to sync. Defaults shown below.
-claude_sync_dirs = ["skills", "commands", "plugins"]
 ```
 
 All fields except `remote` are optional.
@@ -183,8 +180,6 @@ If the SSH session drops unexpectedly (network failure, laptop sleep):
 ### `relocal sync push [session-name]`
 
 Manual sync: local → remote. Uses the same rsync invocation as the sidecar.
-After rsync completes, re-injects hooks into the remote `.claude/settings.json`
-(since the push may have overwritten it).
 
 ### `relocal sync pull [session-name]`
 
@@ -240,6 +235,7 @@ All syncs use rsync over SSH. The core invocation:
 
 ```
 rsync -az --delete --filter=':- .gitignore' \
+  --exclude=.claude/ \
   --exclude=<patterns-from-relocal.toml> \
   <source>/ <destination>/
 ```
@@ -252,36 +248,23 @@ Key behaviors:
 - `--filter=':- .gitignore'`: respects `.gitignore` files at every level of the
   tree to avoid syncing build artifacts, platform-specific binaries, etc.
 - `.git/` **is synced** — the remote has full git history.
+- `.claude/` is **excluded** — managed separately via SSH (see below).
 - Additional exclusions from `relocal.toml`'s `exclude` array are appended as
   `--exclude=<pattern>` flags.
 
 ### `.claude/` Directory Handling
 
-The `.claude/` directory requires special treatment because it contains both
-user configuration that should sync and session-specific state that should not.
+The `.claude/` directory is **excluded entirely** from rsync in both
+directions. Hook configuration on the remote is managed separately via SSH (see
+[Hook Mechanism](#hook-mechanism)), not through rsync.
 
-**Synced subdirectories** (configurable via `claude_sync_dirs`, defaults:
-`skills`, `commands`, `plugins`):
-- These are synced bidirectionally like any other files.
+This avoids a race condition: if rsync overwrote the remote's
+`.claude/settings.json` (removing hooks) and then re-injected them, Claude Code
+could observe the intermediate state where hooks are missing, causing hook
+events like `Stop` to stop firing for the rest of the session.
 
-**`settings.json` handling**:
-- **Push** (local → remote): `settings.json` is synced normally (local
-  overwrites remote). After the push completes, relocal re-injects the hook
-  configuration into the remote's `settings.json` (see
-  [Hook Mechanism](#hook-mechanism)).
-- **Pull** (remote → local): `settings.json` is **excluded** from the pull.
-  The remote copy contains relocal hooks that are not meaningful locally.
-
-**Everything else in `.claude/`** (conversations, cache, etc.): excluded from
-sync in both directions.
-
-This is implemented by excluding `.claude/` wholesale from rsync, then
-explicitly including the configured subdirectories and `settings.json` (push
-only).
-
-**Known limitation**: Changes to `.claude/settings.json` on the remote (e.g.,
-made by Claude itself) are not synced back to local. See
-[Future Improvements](#future-improvements).
+See [Future Improvements](#future-improvements) for plans to selectively sync
+`.claude/` subdirectories (skills, commands, plugins) without this problem.
 
 ### Direction
 
@@ -437,11 +420,9 @@ mediates all syncs triggered by remote hooks.
 
 2. On receiving a request (`push` or `pull`):
    a. Run the appropriate rsync command **locally**.
-   b. If this was a push, re-inject hooks into the remote
-      `.claude/settings.json` (since the push may have overwritten it).
-   c. On success: write `ok` to the ack FIFO via
+   b. On success: write `ok` to the ack FIFO via
       `ssh user@host "echo ok > ~/relocal/.fifos/<session>-ack"`.
-   d. On failure: write `error:<message>` to the ack FIFO via
+   c. On failure: write `error:<message>` to the ack FIFO via
       `ssh user@host "echo 'error:<message>' > ~/relocal/.fifos/<session>-ack"`.
 
 3. The hook script on the remote blocks on the ack FIFO read, receives the
@@ -540,8 +521,7 @@ remote host.
 - Missing required `remote` field → error.
 - Invalid TOML syntax → error.
 - Default values when optional fields are omitted: `exclude` = `[]`,
-  `apt_packages` = `[]`,
-  `claude_sync_dirs` = `["skills", "commands", "plugins"]`.
+  `apt_packages` = `[]`.
 - Unknown keys are ignored without error (forward compatibility).
 
 #### Session Name Validation
@@ -566,13 +546,9 @@ remote host.
 - `.gitignore` filter rule is included.
 - Custom exclude patterns from config are each added as
   `--exclude=<pattern>`.
-- Push direction: `.claude/` excluded wholesale, configured `claude_sync_dirs`
-  re-included, `settings.json` re-included.
-- Pull direction: `.claude/` excluded wholesale, configured `claude_sync_dirs`
-  re-included, `settings.json` NOT re-included.
+- `.claude/` is excluded entirely.
 - Source and destination paths are correct for push vs. pull.
 - Verbose mode (`-v`+) adds `--progress` to rsync.
-- Non-default `claude_sync_dirs` produces correct include rules.
 
 #### Hook JSON Merging
 
@@ -620,23 +596,20 @@ remote session name, and cleans up both on completion (including on panic, via
 - Files deleted locally are deleted on remote after push.
 - Files matching `.gitignore` are NOT synced.
 - Files matching `relocal.toml` `exclude` patterns are NOT synced.
-- `.claude/skills/` (default sync dir) is synced.
-- `.claude/conversations/` (not a sync dir) is NOT synced.
-- `.claude/settings.json` is synced and hooks are present after push.
+- `.claude/` directory is NOT synced.
 
 #### Sync Pull
 
 - Files created on remote appear locally after pull.
 - Files deleted on remote are deleted locally after pull.
-- `.claude/settings.json` is NOT pulled (excluded).
-- `.claude/skills/` is pulled.
+- `.claude/` directory is NOT synced.
 - `.gitignore`-matching files on remote are not pulled.
 - Pull from a non-git remote → refused with error (git fsck safety gate).
 
-#### Hook Injection After Push
+#### Hook Injection
 
-- Push that overwrites remote `settings.json` → hooks are re-injected.
-- Re-injected hooks reference the correct session name.
+- `setup` installs hooks into remote `.claude/settings.json`.
+- Hooks reference the correct session name.
 
 #### FIFO Lifecycle
 
@@ -730,7 +703,11 @@ improvements:
 - **Session persistence**: Detect and reattach to a running remote Claude session
   after a network drop, rather than requiring a fresh start.
 - **Automatic reconnection**: Retry SSH on transient network failures.
-- **Bidirectional `.claude/settings.json` sync**: Currently, remote changes to
-  `settings.json` are not synced back to local. A future version could diff and
-  merge settings changes intelligently.
+- **`.claude/` directory syncing**: The entire `.claude/` directory is currently
+  excluded from rsync because including it causes a race condition: rsync
+  overwrites the remote `settings.json` (removing hooks), and even though hooks
+  are re-injected immediately after, Claude Code may observe the intermediate
+  hookless state and stop firing hook events like `Stop`. A future version
+  should sync `.claude/` subdirectories (skills, commands, plugins) while
+  keeping `settings.json` managed exclusively via SSH.
 - **Colored output**: Add color support for better UX.

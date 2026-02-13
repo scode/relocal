@@ -241,9 +241,9 @@ fn push_respects_config_excludes() {
 
 #[test]
 #[ignore = "requires RELOCAL_TEST_REMOTE"]
-fn push_syncs_claude_skills_but_not_conversations() {
+fn push_excludes_claude_dir() {
     let remote = test_remote().unwrap();
-    let session = unique_session("push-claude-dirs");
+    let session = unique_session("push-no-claude");
     let (dir, config) = make_local_repo(&remote);
     let _cleanup = RemoteCleanup {
         remote: remote.clone(),
@@ -252,49 +252,23 @@ fn push_syncs_claude_skills_but_not_conversations() {
     let runner = ProcessRunner;
     ensure_remote_session_dir(&remote, &session);
 
-    // Create .claude/skills/ (synced) and .claude/conversations/ (not synced)
+    // Create .claude/ content locally
     std::fs::create_dir_all(dir.path().join(".claude/skills")).unwrap();
     std::fs::write(dir.path().join(".claude/skills/my-skill.md"), "skill").unwrap();
-    std::fs::create_dir_all(dir.path().join(".claude/conversations")).unwrap();
-    std::fs::write(dir.path().join(".claude/conversations/chat.json"), "chat").unwrap();
+    std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+    std::fs::write(dir.path().join(".claude/settings.json"), "{}").unwrap();
 
     sync::sync_push(&runner, &config, &session, dir.path(), false).unwrap();
 
-    assert!(remote_file_exists(
+    // Nothing under .claude/ should be synced
+    assert!(!remote_file_exists(
         &remote,
         &format!("{}/.claude/skills/my-skill.md", remote_dir(&session))
     ));
     assert!(!remote_file_exists(
         &remote,
-        &format!("{}/.claude/conversations/chat.json", remote_dir(&session))
+        &format!("{}/.claude/settings.json", remote_dir(&session))
     ));
-}
-
-#[test]
-#[ignore = "requires RELOCAL_TEST_REMOTE"]
-fn push_syncs_settings_json_with_hooks() {
-    let remote = test_remote().unwrap();
-    let session = unique_session("push-settings");
-    let (dir, config) = make_local_repo(&remote);
-    let _cleanup = RemoteCleanup {
-        remote: remote.clone(),
-        session: session.clone(),
-    };
-    let runner = ProcessRunner;
-    ensure_remote_session_dir(&remote, &session);
-
-    std::fs::write(dir.path().join("file.txt"), "data").unwrap();
-    sync::sync_push(&runner, &config, &session, dir.path(), false).unwrap();
-
-    // settings.json should exist and contain hooks
-    let settings = read_remote_file(
-        &remote,
-        &format!("{}/.claude/settings.json", remote_dir(&session)),
-    );
-    assert!(settings.is_some());
-    let content = settings.unwrap();
-    assert!(content.contains("relocal-hook.sh"));
-    assert!(content.contains(&session));
 }
 
 // ---------------------------------------------------------------------------
@@ -361,37 +335,9 @@ fn pull_deletes_propagate() {
 
 #[test]
 #[ignore = "requires RELOCAL_TEST_REMOTE"]
-fn pull_excludes_settings_json() {
+fn pull_excludes_claude_dir() {
     let remote = test_remote().unwrap();
-    let session = unique_session("pull-no-settings");
-    let (dir, config) = make_local_repo(&remote);
-    let _cleanup = RemoteCleanup {
-        remote: remote.clone(),
-        session: session.clone(),
-    };
-    let runner = ProcessRunner;
-    ensure_remote_session_dir(&remote, &session);
-
-    // Push to create remote dir + hooks
-    sync::sync_push(&runner, &config, &session, dir.path(), false).unwrap();
-
-    // Remove local settings.json if it exists
-    let local_settings = dir.path().join(".claude/settings.json");
-    if local_settings.exists() {
-        std::fs::remove_file(&local_settings).unwrap();
-    }
-
-    // Pull should NOT bring back settings.json
-    sync::sync_pull(&runner, &config, &session, dir.path(), false).unwrap();
-
-    assert!(!local_settings.exists());
-}
-
-#[test]
-#[ignore = "requires RELOCAL_TEST_REMOTE"]
-fn pull_syncs_claude_skills() {
-    let remote = test_remote().unwrap();
-    let session = unique_session("pull-skills");
+    let session = unique_session("pull-no-claude");
     let (dir, config) = make_local_repo(&remote);
     let _cleanup = RemoteCleanup {
         remote: remote.clone(),
@@ -403,18 +349,17 @@ fn pull_syncs_claude_skills() {
     // Push to create remote dir
     sync::sync_push(&runner, &config, &session, dir.path(), false).unwrap();
 
-    // Create a skill on remote
+    // Create .claude/ content on remote
     write_remote_file(
         &remote,
-        &format!("{}/.claude/skills/remote-skill.md", remote_dir(&session)),
-        "remote skill content",
+        &format!("{}/.claude/settings.json", remote_dir(&session)),
+        "{\"hooks\":{}}",
     );
 
     sync::sync_pull(&runner, &config, &session, dir.path(), false).unwrap();
 
-    let content =
-        std::fs::read_to_string(dir.path().join(".claude/skills/remote-skill.md")).unwrap();
-    assert_eq!(content, "remote skill content");
+    // .claude/ content should NOT be pulled
+    assert!(!dir.path().join(".claude/settings.json").exists());
 }
 
 // ---------------------------------------------------------------------------
@@ -423,30 +368,18 @@ fn pull_syncs_claude_skills() {
 
 #[test]
 #[ignore = "requires RELOCAL_TEST_REMOTE"]
-fn push_reinjects_hooks_after_overwrite() {
+fn setup_installs_hooks_with_correct_session_name() {
     let remote = test_remote().unwrap();
-    let session = unique_session("hook-reinject");
+    let session = unique_session("hook-inject");
     let (dir, config) = make_local_repo(&remote);
     let _cleanup = RemoteCleanup {
         remote: remote.clone(),
         session: session.clone(),
     };
     let runner = ProcessRunner;
-    ensure_remote_session_dir(&remote, &session);
 
-    // First push installs hooks
-    sync::sync_push(&runner, &config, &session, dir.path(), false).unwrap();
-
-    // Create a local settings.json that overwrites hooks
-    std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
-    std::fs::write(
-        dir.path().join(".claude/settings.json"),
-        "{\"allowedTools\": [\"bash\"]}",
-    )
-    .unwrap();
-
-    // Push again — should overwrite then re-inject
-    sync::sync_push(&runner, &config, &session, dir.path(), false).unwrap();
+    claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
+    claude::cleanup(&runner, &config, &session).unwrap();
 
     let settings = read_remote_file(
         &remote,
@@ -454,34 +387,8 @@ fn push_reinjects_hooks_after_overwrite() {
     )
     .unwrap();
 
-    // Hooks present
+    // Hooks present with correct session name
     assert!(settings.contains("relocal-hook.sh"));
-    assert!(settings.contains(&session));
-    // Original keys preserved
-    assert!(settings.contains("allowedTools"));
-}
-
-#[test]
-#[ignore = "requires RELOCAL_TEST_REMOTE"]
-fn hooks_reference_correct_session_name() {
-    let remote = test_remote().unwrap();
-    let session = unique_session("hook-session-name");
-    let (dir, config) = make_local_repo(&remote);
-    let _cleanup = RemoteCleanup {
-        remote: remote.clone(),
-        session: session.clone(),
-    };
-    let runner = ProcessRunner;
-    ensure_remote_session_dir(&remote, &session);
-
-    sync::sync_push(&runner, &config, &session, dir.path(), false).unwrap();
-
-    let settings = read_remote_file(
-        &remote,
-        &format!("{}/.claude/settings.json", remote_dir(&session)),
-    )
-    .unwrap();
-
     assert!(settings.contains(&format!("RELOCAL_SESSION={session}")));
 }
 

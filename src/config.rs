@@ -7,14 +7,6 @@
 use crate::error::{Error, Result};
 use serde::Deserialize;
 
-fn default_claude_sync_dirs() -> Vec<String> {
-    vec![
-        "skills".to_string(),
-        "commands".to_string(),
-        "plugins".to_string(),
-    ]
-}
-
 /// Deserialized contents of `relocal.toml`.
 ///
 /// All fields except `remote` have defaults, so a minimal config is just
@@ -28,9 +20,6 @@ pub struct Config {
 
     #[serde(default)]
     pub apt_packages: Vec<String>,
-
-    #[serde(default = "default_claude_sync_dirs")]
-    pub claude_sync_dirs: Vec<String>,
 }
 
 impl Config {
@@ -51,10 +40,6 @@ mod tests {
         assert_eq!(config.remote, "user@host");
         assert!(config.exclude.is_empty());
         assert!(config.apt_packages.is_empty());
-        assert_eq!(
-            config.claude_sync_dirs,
-            vec!["skills", "commands", "plugins"]
-        );
     }
 
     #[test]
@@ -63,13 +48,11 @@ mod tests {
 remote = "user@host"
 exclude = [".env", "secrets/"]
 apt_packages = ["libssl-dev", "pkg-config"]
-claude_sync_dirs = ["skills", "custom"]
 "#;
         let config = Config::parse(input).unwrap();
         assert_eq!(config.remote, "user@host");
         assert_eq!(config.exclude, vec![".env", "secrets/"]);
         assert_eq!(config.apt_packages, vec!["libssl-dev", "pkg-config"]);
-        assert_eq!(config.claude_sync_dirs, vec!["skills", "custom"]);
     }
 
     #[test]
@@ -89,10 +72,6 @@ claude_sync_dirs = ["skills", "custom"]
         let config = Config::parse("remote = \"u@h\"").unwrap();
         assert_eq!(config.exclude, Vec::<String>::new());
         assert_eq!(config.apt_packages, Vec::<String>::new());
-        assert_eq!(
-            config.claude_sync_dirs,
-            vec!["skills", "commands", "plugins"]
-        );
     }
 
     #[test]
