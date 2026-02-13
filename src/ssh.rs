@@ -102,6 +102,11 @@ pub fn mkdir_bin_dir() -> String {
     format!("mkdir -p {RELOCAL_DIR}/.bin")
 }
 
+/// Command to create the logs directory.
+pub fn mkdir_logs_dir() -> String {
+    format!("mkdir -p {RELOCAL_DIR}/.logs")
+}
+
 /// Path to the hook helper script on the remote.
 pub fn hook_script_path() -> String {
     format!("{RELOCAL_DIR}/.bin/relocal-hook.sh")
@@ -112,12 +117,12 @@ pub fn rm_relocal_dir() -> String {
     format!("rm -rf {RELOCAL_DIR}")
 }
 
-/// Command to list session directories with sizes (excludes `.bin/` and `.fifos/`).
+/// Command to list session directories with sizes (excludes `.bin/`, `.fifos/`, and `.logs/`).
 ///
 /// Output format: `<name>\t<size>` per line, e.g. `my-session\t4.0K`.
 pub fn list_sessions() -> String {
     format!(
-        "cd {RELOCAL_DIR} 2>/dev/null && for d in $(ls -1 | grep -v '^\\.bin$' | grep -v '^\\.fifos$'); do size=$(du -sh \"$d\" 2>/dev/null | cut -f1); printf '%s\\t%s\\n' \"$d\" \"$size\"; done"
+        "cd {RELOCAL_DIR} 2>/dev/null && for d in $(ls -1 | grep -v '^\\.bin$' | grep -v '^\\.fifos$' | grep -v '^\\.logs$'); do size=$(du -sh \"$d\" 2>/dev/null | cut -f1); printf '%s\\t%s\\n' \"$d\" \"$size\"; done"
     )
 }
 
@@ -259,11 +264,17 @@ mod tests {
     }
 
     #[test]
+    fn mkdir_logs_dir_format() {
+        assert_eq!(mkdir_logs_dir(), "mkdir -p ~/relocal/.logs");
+    }
+
+    #[test]
     fn list_sessions_excludes_dot_dirs() {
         let cmd = list_sessions();
         assert!(cmd.contains("grep -v"));
         assert!(cmd.contains(".bin"));
         assert!(cmd.contains(".fifos"));
+        assert!(cmd.contains(".logs"));
         assert!(cmd.contains("du -sh"));
     }
 

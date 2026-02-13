@@ -17,6 +17,7 @@ pub fn run(runner: &dyn CommandRunner, config: &Config) -> Result<()> {
     authenticate_claude(runner, config)?;
     install_hook_script(runner, config)?;
     create_fifo_dir(runner, config)?;
+    create_logs_dir(runner, config)?;
 
     eprintln!("Remote installation complete.");
     Ok(())
@@ -97,6 +98,12 @@ fn install_hook_script(runner: &dyn CommandRunner, config: &Config) -> Result<()
 fn create_fifo_dir(runner: &dyn CommandRunner, config: &Config) -> Result<()> {
     eprintln!("Creating FIFO directory...");
     runner.run_ssh(&config.remote, &ssh::mkdir_fifos_dir())?;
+    Ok(())
+}
+
+fn create_logs_dir(runner: &dyn CommandRunner, config: &Config) -> Result<()> {
+    eprintln!("Creating logs directory...");
+    runner.run_ssh(&config.remote, &ssh::mkdir_logs_dir())?;
     Ok(())
 }
 
@@ -288,6 +295,24 @@ apt_packages = ["libssl-dev", "pkg-config"]
     }
 
     #[test]
+    fn logs_dir_created() {
+        let mock = MockRunner::new();
+        mock.add_response(MockResponse::Ok(String::new()));
+
+        create_logs_dir(&mock, &test_config()).unwrap();
+
+        let inv = mock.invocations();
+        assert_eq!(inv.len(), 1);
+        match &inv[0] {
+            Invocation::Ssh { command, .. } => {
+                assert!(command.contains("mkdir -p"));
+                assert!(command.contains(".logs"));
+            }
+            _ => panic!("expected Ssh"),
+        }
+    }
+
+    #[test]
     fn full_run_issues_all_steps() {
         let mock = MockRunner::new();
         // 1. APT
@@ -304,12 +329,14 @@ apt_packages = ["libssl-dev", "pkg-config"]
         mock.add_response(MockResponse::Ok(String::new()));
         // 6. mkdir .fifos
         mock.add_response(MockResponse::Ok(String::new()));
+        // 7. mkdir .logs
+        mock.add_response(MockResponse::Ok(String::new()));
 
         run(&mock, &test_config()).unwrap();
 
         let inv = mock.invocations();
-        // APT(1) + rustup check(1) + claude check(1) + auth check(1) + hook(2) + fifos(1) = 7
-        assert_eq!(inv.len(), 7);
+        // APT(1) + rustup check(1) + claude check(1) + auth check(1) + hook(2) + fifos(1) + logs(1) = 8
+        assert_eq!(inv.len(), 8);
 
         // All commands go to the right remote
         for i in &inv {
