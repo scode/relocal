@@ -3,6 +3,8 @@
 //! This is a development/upgrade escape hatch for when you want a clean slate.
 //! It does NOT uninstall APT packages, Rust, or Claude Code.
 
+use tracing::info;
+
 use crate::config::Config;
 use crate::error::Result;
 use crate::runner::CommandRunner;
@@ -31,7 +33,7 @@ pub fn run(runner: &dyn CommandRunner, config: &Config, confirm: bool) -> Result
         }
     }
 
-    eprintln!("Nuking ~/relocal/ on {}...", config.remote);
+    info!("Nuking ~/relocal/ on {}...", config.remote);
     runner.run_ssh(&config.remote, &ssh::rm_relocal_dir())?;
 
     eprintln!("Done. Run `relocal remote install` to set up again.");

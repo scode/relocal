@@ -3,6 +3,8 @@
 //! Performs six idempotent steps: APT packages, Rust, Claude Code, Claude auth,
 //! hook script, and FIFO directory. Safe to re-run at any time.
 
+use tracing::info;
+
 use crate::config::Config;
 use crate::error::Result;
 use crate::hooks::hook_script_content;
@@ -19,12 +21,12 @@ pub fn run(runner: &dyn CommandRunner, config: &Config) -> Result<()> {
     create_fifo_dir(runner, config)?;
     create_logs_dir(runner, config)?;
 
-    eprintln!("Remote installation complete.");
+    info!("Remote installation complete.");
     Ok(())
 }
 
 fn install_apt_packages(runner: &dyn CommandRunner, config: &Config) -> Result<()> {
-    eprintln!("Installing APT packages...");
+    info!("Installing APT packages...");
     let mut packages = vec![
         "build-essential".to_string(),
         "nodejs".to_string(),
@@ -39,14 +41,14 @@ fn install_apt_packages(runner: &dyn CommandRunner, config: &Config) -> Result<(
 }
 
 fn install_rust(runner: &dyn CommandRunner, config: &Config) -> Result<()> {
-    eprintln!("Checking for Rust...");
+    info!("Checking for Rust...");
     let check = runner.run_ssh(&config.remote, "command -v rustup")?;
     if check.status.success() {
-        eprintln!("  rustup already installed, skipping.");
+        info!("rustup already installed, skipping.");
         return Ok(());
     }
 
-    eprintln!("  Installing Rust via rustup...");
+    info!("Installing Rust via rustup...");
     runner.run_ssh(
         &config.remote,
         "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y",
@@ -55,33 +57,33 @@ fn install_rust(runner: &dyn CommandRunner, config: &Config) -> Result<()> {
 }
 
 fn install_claude_code(runner: &dyn CommandRunner, config: &Config) -> Result<()> {
-    eprintln!("Checking for Claude Code...");
+    info!("Checking for Claude Code...");
     let check = runner.run_ssh(&config.remote, &ssh::check_claude_installed())?;
     if check.status.success() {
-        eprintln!("  Claude Code already installed, skipping.");
+        info!("Claude Code already installed, skipping.");
         return Ok(());
     }
 
-    eprintln!("  Installing Claude Code via npm...");
+    info!("Installing Claude Code via npm...");
     runner.run_ssh(&config.remote, "npm install -g @anthropic-ai/claude-code")?;
     Ok(())
 }
 
 fn authenticate_claude(runner: &dyn CommandRunner, config: &Config) -> Result<()> {
-    eprintln!("Checking Claude authentication...");
+    info!("Checking Claude authentication...");
     let check = runner.run_ssh(&config.remote, "claude auth status")?;
     if check.status.success() {
-        eprintln!("  Claude already authenticated, skipping.");
+        info!("Claude already authenticated, skipping.");
         return Ok(());
     }
 
-    eprintln!("  Running claude login (interactive)...");
+    info!("Running claude login (interactive)...");
     runner.run_ssh_interactive(&config.remote, "claude login")?;
     Ok(())
 }
 
 fn install_hook_script(runner: &dyn CommandRunner, config: &Config) -> Result<()> {
-    eprintln!("Installing hook script...");
+    info!("Installing hook script...");
     runner.run_ssh(&config.remote, &ssh::mkdir_bin_dir())?;
 
     let script = hook_script_content();
@@ -96,13 +98,13 @@ fn install_hook_script(runner: &dyn CommandRunner, config: &Config) -> Result<()
 }
 
 fn create_fifo_dir(runner: &dyn CommandRunner, config: &Config) -> Result<()> {
-    eprintln!("Creating FIFO directory...");
+    info!("Creating FIFO directory...");
     runner.run_ssh(&config.remote, &ssh::mkdir_fifos_dir())?;
     Ok(())
 }
 
 fn create_logs_dir(runner: &dyn CommandRunner, config: &Config) -> Result<()> {
-    eprintln!("Creating logs directory...");
+    info!("Creating logs directory...");
     runner.run_ssh(&config.remote, &ssh::mkdir_logs_dir())?;
     Ok(())
 }

@@ -3,6 +3,8 @@
 //! Deletes the remote working directory and associated FIFOs after prompting
 //! for confirmation. Uses the [`CommandRunner`] trait for all SSH operations.
 
+use tracing::info;
+
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::runner::CommandRunner;
@@ -48,10 +50,10 @@ pub fn run(
         }
     }
 
-    eprintln!("Removing remote working directory...");
+    info!("Removing remote working directory...");
     runner.run_ssh(&config.remote, &ssh::rm_work_dir(session_name))?;
 
-    eprintln!("Removing FIFOs...");
+    info!("Removing FIFOs...");
     runner.run_ssh(&config.remote, &ssh::remove_fifos(session_name))?;
 
     eprintln!("Session '{session_name}' destroyed.");
