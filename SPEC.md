@@ -27,9 +27,13 @@ Distribution and installation of the `relocal` binary itself (e.g., via
 
 A single `relocal.toml` file in the repo root. Created by `relocal init`.
 
-The repo root is discovered by walking up from the current working directory
-looking for a `relocal.toml` file. If not found, commands that require it fail
-with an error suggesting `relocal init`.
+The repo root is discovered by checking the current working directory for a
+`relocal.toml` file. Unlike tools that walk up the directory tree, relocal
+intentionally only checks the CWD. This prevents accidentally discovering a
+`relocal.toml` high in the tree (e.g. in `$HOME`) which would cause the tool to
+sync an unexpectedly large directory with `rsync --delete`. If not found,
+commands that require it fail with an error suggesting `relocal init` or running
+from the project root.
 
 ```toml
 remote = "user@host"
@@ -182,6 +186,12 @@ After rsync completes, re-injects hooks into the remote `.claude/settings.json`
 ### `relocal sync pull [session-name]`
 
 Manual sync: remote → local. Uses the same rsync invocation as the sidecar.
+
+**Safety gate**: Before running rsync, verifies the remote session directory is a
+valid git repository by running `git fsck --strict --full --no-dangling` over
+SSH. If the check fails (remote was destroyed, emptied, corrupted, or is not a
+git repo), the pull is refused. This prevents `rsync --delete` from wiping the
+local working tree. This check also applies to sidecar-triggered pulls.
 
 ### `relocal status [session-name]`
 
@@ -427,8 +437,12 @@ mediates all syncs triggered by remote hooks.
 - **SSH connection drop**: The main process detects the SSH child process exit,
   terminates the sidecar, attempts FIFO cleanup, and prints a warning with
   recovery instructions (use `relocal sync push`/`pull`).
+- **Pull safety**: Before any remote→local sync (manual or sidecar-triggered),
+  `git fsck --strict --full --no-dangling` is run on the remote session
+  directory. If it fails, the pull is refused to prevent `rsync --delete` from
+  wiping the local tree.
 - **Missing `relocal.toml`**: All commands except `init` fail with a clear error
-  message.
+  message. Only the current working directory is checked (no upward walk).
 - **Remote directory does not exist**: `start` creates it. `sync` fails (rsync
   reports the error). `status` reports that the directory does not exist (does
   not fail). `destroy` fails with a message that the session was not found.
@@ -476,8 +490,8 @@ Code and design choices should favor testability. Specifically:
 - **Function signatures that enable testing**:
   - Config parsing: `&str` → `Result<Config, Error>`
   - Session name validation: `&str` → `Result<(), Error>`
-  - Repo root discovery: `&Path` (starting dir) → `Result<PathBuf, Error>`
-    (testable with temp directories)
+  - Repo root discovery: `&Path` (CWD) → `Result<PathBuf, Error>`
+    (testable with temp directories; only checks given dir, no upward walk)
   - rsync argument construction: `(&Config, Direction, &str)` →
     `Vec<String>` (includes all `.claude/` filter logic)
   - Hook JSON merging: `(Option<serde_json::Value>, &str)` →
@@ -514,10 +528,8 @@ remote host.
 #### Repo Root Discovery
 
 - `relocal.toml` in current directory → returns current directory.
-- `relocal.toml` in parent → returns parent.
-- `relocal.toml` in grandparent → returns grandparent.
-- No `relocal.toml` anywhere up to filesystem root → error.
-- Multiple `relocal.toml` files in ancestry → returns nearest (lowest).
+- `relocal.toml` only in parent (not CWD) → error (does not walk up).
+- No `relocal.toml` in CWD → error.
 
 #### rsync Argument Construction
 
@@ -590,6 +602,7 @@ remote session name, and cleans up both on completion (including on panic, via
 - `.claude/settings.json` is NOT pulled (excluded).
 - `.claude/skills/` is pulled.
 - `.gitignore`-matching files on remote are not pulled.
+- Pull from a non-git remote → refused with error (git fsck safety gate).
 
 #### Hook Injection After Push
 

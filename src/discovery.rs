@@ -8,21 +8,19 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 
-/// Walks up from `start` looking for a directory containing `relocal.toml`.
-/// Returns the first (nearest) directory that contains it, or an error if
-/// none is found all the way up to the filesystem root.
+/// Checks whether `start` contains a `relocal.toml` file.
+///
+/// Unlike tools that walk up the directory tree, this intentionally only
+/// checks the given directory. This prevents accidentally discovering a
+/// `relocal.toml` high up the tree (e.g. in `$HOME`) which would cause
+/// the tool to sync an unexpectedly large directory with `--delete`.
 pub fn find_repo_root(start: &Path) -> Result<PathBuf> {
-    let mut current = start.to_path_buf();
-    loop {
-        if current.join("relocal.toml").is_file() {
-            return Ok(current);
-        }
-        if !current.pop() {
-            return Err(Error::ConfigNotFound {
-                start_dir: start.to_path_buf(),
-            });
-        }
+    if start.join("relocal.toml").is_file() {
+        return Ok(start.to_path_buf());
     }
+    Err(Error::ConfigNotFound {
+        start_dir: start.to_path_buf(),
+    })
 }
 
 #[cfg(test)]
@@ -39,24 +37,6 @@ mod tests {
     }
 
     #[test]
-    fn found_in_parent() {
-        let tmp = TempDir::new().unwrap();
-        fs::write(tmp.path().join("relocal.toml"), "remote = \"u@h\"").unwrap();
-        let child = tmp.path().join("subdir");
-        fs::create_dir(&child).unwrap();
-        assert_eq!(find_repo_root(&child).unwrap(), tmp.path());
-    }
-
-    #[test]
-    fn found_in_grandparent() {
-        let tmp = TempDir::new().unwrap();
-        fs::write(tmp.path().join("relocal.toml"), "remote = \"u@h\"").unwrap();
-        let grandchild = tmp.path().join("a").join("b");
-        fs::create_dir_all(&grandchild).unwrap();
-        assert_eq!(find_repo_root(&grandchild).unwrap(), tmp.path());
-    }
-
-    #[test]
     fn not_found() {
         let tmp = TempDir::new().unwrap();
         let err = find_repo_root(tmp.path()).unwrap_err();
@@ -64,15 +44,14 @@ mod tests {
     }
 
     #[test]
-    fn nearest_wins() {
+    fn does_not_walk_up_to_parent() {
         let tmp = TempDir::new().unwrap();
-        // relocal.toml in root
-        fs::write(tmp.path().join("relocal.toml"), "remote = \"outer@h\"").unwrap();
-        // relocal.toml in child (nearer)
-        let child = tmp.path().join("inner");
+        fs::write(tmp.path().join("relocal.toml"), "remote = \"u@h\"").unwrap();
+        let child = tmp.path().join("subdir");
         fs::create_dir(&child).unwrap();
-        fs::write(child.join("relocal.toml"), "remote = \"inner@h\"").unwrap();
 
-        assert_eq!(find_repo_root(&child).unwrap(), child);
+        // Must NOT find relocal.toml in parent — only checks the given directory
+        let err = find_repo_root(&child).unwrap_err();
+        assert!(matches!(err, Error::ConfigNotFound { .. }));
     }
 }
