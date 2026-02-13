@@ -67,26 +67,42 @@ fn upsert_relocal_hook(array: &mut Vec<Value>, session_name: &str, direction: &s
 /// The script accepts a direction argument (`push` or `pull`), writes it to the
 /// session's request FIFO, then blocks reading an ack from the ack FIFO. The
 /// sidecar on the local side performs the actual sync and writes the ack.
+///
+/// Each invocation logs timestamped events to
+/// `~/relocal/.logs/<session>-<direction>.log` via file descriptor 3,
+/// keeping stdout/stderr clean for Claude.
 pub fn hook_script_content() -> String {
     r#"#!/bin/bash
 set -euo pipefail
 
 DIRECTION="${1:?Usage: relocal-hook.sh <push|pull>}"
 FIFO_DIR="$HOME/relocal/.fifos"
+LOG_DIR="$HOME/relocal/.logs"
 REQUEST_FIFO="$FIFO_DIR/${RELOCAL_SESSION}-request"
 ACK_FIFO="$FIFO_DIR/${RELOCAL_SESSION}-ack"
 
+# Open log file (overwritten each invocation per direction)
+mkdir -p "$LOG_DIR"
+exec 3>"$LOG_DIR/${RELOCAL_SESSION}-${DIRECTION}.log"
+
+echo "[$(date -Iseconds)] hook start: direction=$DIRECTION session=$RELOCAL_SESSION" >&3
+
 # Send sync request (blocks until sidecar reads it)
 echo "$DIRECTION" > "$REQUEST_FIFO"
+echo "[$(date -Iseconds)] request sent, waiting for ack" >&3
 
 # Wait for ack (blocks until sidecar writes response)
 ACK=$(cat "$ACK_FIFO")
 
 if [ "$ACK" = "ok" ]; then
+    echo "[$(date -Iseconds)] ack received: ok" >&3
+    exec 3>&-
     exit 0
 else
     # Strip "error:" prefix if present
     MSG="${ACK#error:}"
+    echo "[$(date -Iseconds)] ack received: error: $MSG" >&3
+    exec 3>&-
     echo "$MSG" >&2
     exit 1
 fi
@@ -331,5 +347,28 @@ mod tests {
         assert!(script.contains("exit 0"));
         assert!(script.contains("exit 1"));
         assert!(script.contains(">&2"));
+    }
+
+    #[test]
+    fn hook_script_opens_log_file() {
+        let script = hook_script_content();
+        assert!(script.contains("$HOME/relocal/.logs"));
+        assert!(script.contains("exec 3>\"$LOG_DIR/${RELOCAL_SESSION}-${DIRECTION}.log\""));
+    }
+
+    #[test]
+    fn hook_script_logs_to_fd3() {
+        let script = hook_script_content();
+        // Key events are logged to FD 3
+        assert!(script.contains(">&3"));
+        assert!(script.contains("hook start:"));
+        assert!(script.contains("request sent"));
+        assert!(script.contains("ack received"));
+    }
+
+    #[test]
+    fn hook_script_closes_log_fd() {
+        let script = hook_script_content();
+        assert!(script.contains("exec 3>&-"));
     }
 }

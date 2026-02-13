@@ -123,6 +123,9 @@ remote (or re-run to update). Performs the following steps in order:
 6. **FIFO directory**: Creates `~/relocal/.fifos/` for the sync signaling
    mechanism.
 
+7. **Logs directory**: Creates `~/relocal/.logs/` for hook invocation logs
+   (see [Hook Logging](#hook-logging)).
+
 All steps are idempotent — re-running `relocal remote install` is safe.
 
 ### `relocal claude [session-name]`
@@ -206,7 +209,7 @@ Shows information about the current session:
 ### `relocal list`
 
 Lists all sessions on the configured remote by listing directories under
-`~/relocal/` (excluding `.bin/` and `.fifos/`).
+`~/relocal/` (excluding `.bin/`, `.fifos/`, and `.logs/`).
 
 Shows each session name and the size of its working copy.
 
@@ -382,6 +385,23 @@ The hook installation must handle existing `.claude/settings.json` content:
 
 This ensures user-defined hooks in the same arrays are preserved, and repeated
 runs of `relocal claude` or `relocal sync push` do not duplicate entries.
+
+### Hook Logging
+
+Each hook invocation writes a timestamped log file to `~/relocal/.logs/` on the
+remote. The log file is named `<session>-<direction>.log` (e.g.,
+`my-session-push.log`) and is overwritten on each invocation of that
+session/direction pair, so it always contains the most recent run.
+
+The script opens a dedicated file descriptor (FD 3) for log output to keep
+stdout and stderr clean for Claude. Key events logged:
+
+- Hook start (direction and session name)
+- Request sent to FIFO
+- Ack received (with result: ok or error message)
+
+This provides visibility into hook execution for debugging without interfering
+with Claude's hook output parsing.
 
 ## Sync Sidecar
 
@@ -662,7 +682,7 @@ remote session name, and cleans up both on completion (including on panic, via
 
 - No sessions → empty output.
 - Multiple sessions → all listed.
-- `.bin/` and `.fifos/` are excluded from listing.
+- `.bin/`, `.fifos/`, and `.logs/` are excluded from listing.
 
 #### `relocal status`
 

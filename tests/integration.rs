@@ -928,9 +928,10 @@ fn list_shows_sessions_and_excludes_dot_dirs() {
     runner
         .run_ssh(&remote, &ssh::mkdir_work_dir(&session2))
         .unwrap();
-    // Ensure .bin and .fifos exist
+    // Ensure .bin, .fifos, and .logs exist
     runner.run_ssh(&remote, &ssh::mkdir_bin_dir()).unwrap();
     runner.run_ssh(&remote, &ssh::mkdir_fifos_dir()).unwrap();
+    runner.run_ssh(&remote, &ssh::mkdir_logs_dir()).unwrap();
 
     // List sessions via SSH — output format is "name\tsize" per line
     let output = runner.run_ssh(&remote, &ssh::list_sessions()).unwrap();
@@ -944,6 +945,7 @@ fn list_shows_sessions_and_excludes_dot_dirs() {
     assert!(session_names.contains(&session2.as_str()));
     assert!(!session_names.contains(&".bin"));
     assert!(!session_names.contains(&".fifos"));
+    assert!(!session_names.contains(&".logs"));
 }
 
 #[test]
