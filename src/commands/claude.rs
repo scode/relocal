@@ -7,6 +7,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use tracing::{error, info, warn};
+
 use crate::commands::sync::{reinject_hooks, sync_push};
 use crate::config::Config;
 use crate::error::{Error, Result};
@@ -56,15 +58,15 @@ pub fn run(
             print_dirty_shutdown_message(session_name, config);
         }
         Err(e) => {
-            eprintln!("SSH session error: {e}");
+            error!("SSH session error: {e}");
             print_dirty_shutdown_message(session_name, config);
         }
     }
 
     // Report cleanup failure but don't fail the command
     if let Err(e) = cleanup_result {
-        eprintln!("Warning: FIFO cleanup failed: {e}");
-        eprintln!("You may need to run: relocal destroy {session_name}");
+        warn!("FIFO cleanup failed: {e}");
+        warn!("You may need to run: relocal destroy {session_name}");
     }
 
     Ok(())
@@ -82,7 +84,7 @@ pub fn setup(
     verbose: bool,
 ) -> Result<()> {
     // 1. Check for stale FIFOs
-    eprintln!("Checking for stale session...");
+    info!("Checking for stale session...");
     let fifo_check = runner.run_ssh(&config.remote, &ssh::check_fifos_exist(session_name))?;
     if fifo_check.status.success() {
         return Err(Error::StaleSession {
@@ -91,7 +93,7 @@ pub fn setup(
     }
 
     // 1b. Check Claude is installed on remote
-    eprintln!("Checking Claude installation...");
+    info!("Checking Claude installation...");
     let claude_check = runner.run_ssh(&config.remote, &ssh::check_claude_installed())?;
     if !claude_check.status.success() {
         return Err(Error::Remote {
@@ -102,11 +104,11 @@ pub fn setup(
     }
 
     // 2. Create remote working directory
-    eprintln!("Creating remote working directory...");
+    info!("Creating remote working directory...");
     runner.run_ssh(&config.remote, &ssh::mkdir_work_dir(session_name))?;
 
     // 3. Create FIFOs (ensure the .fifos dir exists first)
-    eprintln!("Creating FIFOs...");
+    info!("Creating FIFOs...");
     runner.run_ssh(&config.remote, &ssh::mkdir_fifos_dir())?;
     runner.run_ssh(&config.remote, &ssh::create_fifos(session_name))?;
 
@@ -121,7 +123,7 @@ pub fn setup(
 
 /// Post-session cleanup: remove FIFOs (best-effort).
 pub fn cleanup(runner: &dyn CommandRunner, config: &Config, session_name: &str) -> Result<()> {
-    eprintln!("Cleaning up FIFOs...");
+    info!("Cleaning up FIFOs...");
     runner.run_ssh(&config.remote, &ssh::remove_fifos(session_name))?;
     Ok(())
 }

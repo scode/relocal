@@ -6,6 +6,8 @@
 
 use std::path::Path;
 
+use tracing::info;
+
 use crate::config::Config;
 use crate::error::Result;
 use crate::hooks::merge_hooks;
@@ -21,7 +23,7 @@ pub fn sync_push(
     repo_root: &Path,
     verbose: bool,
 ) -> Result<()> {
-    eprintln!("Pushing to remote...");
+    info!("Pushing to remote...");
     let args = build_rsync_args(config, Direction::Push, session_name, repo_root, verbose);
     let rsync_result = runner.run_rsync(&args)?;
     if !rsync_result.status.success() {
@@ -31,7 +33,7 @@ pub fn sync_push(
         });
     }
 
-    eprintln!("Push complete.");
+    info!("Push complete.");
     Ok(())
 }
 
@@ -48,7 +50,7 @@ pub fn sync_pull(
     verbose: bool,
 ) -> Result<()> {
     // Safety gate: verify remote is a healthy git repo before pulling
-    eprintln!("Verifying remote git repository...");
+    info!("Verifying remote git repository...");
     let fsck_result = runner.run_ssh(&config.remote, &ssh::git_fsck(session_name))?;
     if !fsck_result.status.success() {
         return Err(crate::error::Error::RemoteGitFsckFailed {
@@ -57,7 +59,7 @@ pub fn sync_pull(
         });
     }
 
-    eprintln!("Pulling from remote...");
+    info!("Pulling from remote...");
     let args = build_rsync_args(config, Direction::Pull, session_name, repo_root, verbose);
     let rsync_result = runner.run_rsync(&args)?;
     if !rsync_result.status.success() {
@@ -67,7 +69,7 @@ pub fn sync_pull(
         });
     }
 
-    eprintln!("Pull complete.");
+    info!("Pull complete.");
     Ok(())
 }
 
@@ -78,7 +80,7 @@ pub fn reinject_hooks(
     config: &Config,
     session_name: &str,
 ) -> Result<()> {
-    eprintln!("Re-injecting hooks...");
+    info!("Re-injecting hooks...");
 
     // Read existing settings.json (may not exist yet)
     let read_result = runner.run_ssh(&config.remote, &ssh::read_settings_json(session_name))?;

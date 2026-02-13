@@ -15,6 +15,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
+use tracing::warn;
+
 use crate::commands::sync::{sync_pull, sync_push};
 use crate::config::Config;
 use crate::error::Result;
@@ -135,7 +137,7 @@ pub fn handle_request(
         "push" => sync_push(runner, config, session_name, repo_root, verbose),
         "pull" => sync_pull(runner, config, session_name, repo_root, verbose),
         other => {
-            eprintln!("Sidecar: unknown request: {other}");
+            warn!("Sidecar: unknown request: {other}");
             Ok(())
         }
     }
