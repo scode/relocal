@@ -1,4 +1,4 @@
-//! `relocal start [session-name]` — main orchestration command.
+//! `relocal claude [session-name]` — main orchestration command.
 //!
 //! Syncs the repo to the remote, launches an interactive Claude session, and
 //! manages a background sidecar that handles hook-triggered syncs. On exit,
@@ -15,7 +15,13 @@ use crate::sidecar::Sidecar;
 use crate::ssh;
 
 /// Production entry point: runs the full start flow with real sidecar and SSH.
-pub fn run(config: &Config, session_name: &str, repo_root: &Path, verbose: bool) -> Result<()> {
+pub fn run(
+    config: &Config,
+    session_name: &str,
+    repo_root: &Path,
+    verbose: bool,
+    claude_args: &[String],
+) -> Result<()> {
     let runner = ProcessRunner;
 
     // Pre-sidecar setup
@@ -32,8 +38,10 @@ pub fn run(config: &Config, session_name: &str, repo_root: &Path, verbose: bool)
     )?;
 
     // Run interactive Claude session
-    let ssh_result =
-        runner.run_ssh_interactive(&config.remote, &ssh::start_claude_session(session_name));
+    let ssh_result = runner.run_ssh_interactive(
+        &config.remote,
+        &ssh::start_claude_session(session_name, claude_args),
+    );
 
     // Cleanup always runs
     sidecar.shutdown();

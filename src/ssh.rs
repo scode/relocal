@@ -145,11 +145,20 @@ pub fn check_claude_installed() -> String {
 }
 
 /// Command to launch an interactive Claude session in the working directory.
-pub fn start_claude_session(session: &str) -> String {
-    format!(
+///
+/// Any extra arguments are appended after `--dangerously-skip-permissions`,
+/// allowing the caller to pass flags like `--debug` through to `claude`.
+pub fn start_claude_session(session: &str, extra_args: &[String]) -> String {
+    let mut cmd = format!(
         "cd {} && claude --dangerously-skip-permissions",
         remote_work_dir(session)
-    )
+    );
+    for arg in extra_args {
+        cmd.push(' ');
+        let quoted: String = arg.as_str().quoted(Bash);
+        cmd.push_str(&quoted);
+    }
+    cmd
 }
 
 #[cfg(test)]
@@ -260,9 +269,17 @@ mod tests {
 
     #[test]
     fn start_claude_session_format() {
-        let cmd = start_claude_session("s1");
+        let cmd = start_claude_session("s1", &[]);
         assert!(cmd.contains("cd ~/relocal/s1"));
         assert!(cmd.contains("claude --dangerously-skip-permissions"));
+    }
+
+    #[test]
+    fn start_claude_session_with_extra_args() {
+        let args = vec!["--debug".to_string(), "--resume".to_string()];
+        let cmd = start_claude_session("s1", &args);
+        assert!(cmd.contains("claude --dangerously-skip-permissions"));
+        assert!(cmd.ends_with(" --debug --resume"));
     }
 
     #[test]

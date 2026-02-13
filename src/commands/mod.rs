@@ -1,10 +1,10 @@
 //! Implementations of each CLI subcommand.
 
+pub mod claude;
 pub mod destroy;
 pub mod init;
 pub mod install;
 pub mod list;
 pub mod nuke;
-pub mod start;
 pub mod status;
 pub mod sync;

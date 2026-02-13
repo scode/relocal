@@ -24,7 +24,7 @@ src/
     init.rs        — `relocal init`
     install.rs     — `relocal remote install`
     sync.rs        — `relocal sync push` / `relocal sync pull`
-    start.rs       — `relocal start` (main orchestration)
+    claude.rs      — `relocal claude` (main orchestration)
     status.rs      — `relocal status`
     list.rs        — `relocal list`
     destroy.rs     — `relocal destroy`
@@ -112,10 +112,10 @@ _Goal: Background sync mediator works correctly._
 - [x] **10a. Create `src/sidecar.rs`** — `Sidecar` struct. Spawns a thread that: opens SSH connection reading request FIFO (`ssh user@host "while true; do cat <fifo>; done"`), on each line received runs appropriate rsync + hook re-injection (for push), writes ack to ack FIFO via SSH. Provides `shutdown()` method that terminates the SSH process and joins the thread.
 - [x] **10b. Unit tests with MockRunner** — verify sidecar issues correct SSH command for FIFO reading, verify push request triggers rsync + hook re-injection + ok ack, verify pull request triggers rsync + ok ack, verify rsync failure triggers error ack, verify multiple sequential requests work, verify clean shutdown.
 
-### Step 11: `start` Command (Main Orchestration)
+### Step 11: `claude` Command (Main Orchestration)
 _Goal: The primary user workflow works end-to-end._
 
-- [x] **11a. Create `src/commands/start.rs`** — implements full flow: load config, validate session name, check stale FIFOs, create remote dir, create FIFOs, initial push, install hooks, start sidecar, SSH interactive session (`ssh -t ... "cd ~/relocal/<session> && claude --dangerously-skip-permissions"`), on SSH exit: shutdown sidecar, remove FIFOs, print summary.
+- [x] **11a. Create `src/commands/claude.rs`** — implements full flow: load config, validate session name, check stale FIFOs, create remote dir, create FIFOs, initial push, install hooks, start sidecar, SSH interactive session (`ssh -t ... "cd ~/relocal/<session> && claude --dangerously-skip-permissions"`), on SSH exit: shutdown sidecar, remove FIFOs, print summary.
 - [x] **11b. Signal handling** — SIGINT forwarded naturally by SSH terminal. On SSH exit (any cause): cleanup proceeds.
 - [x] **11c. Dirty shutdown handling** — detect SSH error exit, attempt FIFO cleanup (best-effort), print recovery instructions.
 - [x] **11d. Unit tests with MockRunner** — verify full sequence of operations, verify stale FIFO detection (refuses to start), verify FIFO cleanup on clean exit, verify error path (SSH fails), verify summary printed.
