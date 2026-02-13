@@ -125,7 +125,7 @@ remote (or re-run to update). Performs the following steps in order:
 
 All steps are idempotent — re-running `relocal remote install` is safe.
 
-### `relocal start [session-name]`
+### `relocal claude [session-name]`
 
 Main command. Syncs the repo to the remote and launches an interactive Claude
 session.
@@ -381,11 +381,11 @@ The hook installation must handle existing `.claude/settings.json` content:
   - If no relocal matcher group exists, append a new one to the array.
 
 This ensures user-defined hooks in the same arrays are preserved, and repeated
-runs of `relocal start` or `relocal sync push` do not duplicate entries.
+runs of `relocal claude` or `relocal sync push` do not duplicate entries.
 
 ## Sync Sidecar
 
-The sidecar is a local background process managed by `relocal start`. It
+The sidecar is a local background process managed by `relocal claude`. It
 mediates all syncs triggered by remote hooks.
 
 ### Architecture
@@ -432,9 +432,9 @@ mediates all syncs triggered by remote hooks.
 
 ### FIFO Lifecycle
 
-- Created by `relocal start` before launching Claude.
-- Removed by `relocal start` on clean shutdown.
-- On dirty shutdown (network drop), FIFOs may be left behind. `relocal start`
+- Created by `relocal claude` before launching Claude.
+- Removed by `relocal claude` on clean shutdown.
+- On dirty shutdown (network drop), FIFOs may be left behind. `relocal claude`
   checks for existing FIFOs and refuses to start if they exist (see
   [Stale session detection](#relocal-start-session-name)).
 
@@ -452,12 +452,12 @@ mediates all syncs triggered by remote hooks.
   wiping the local tree.
 - **Missing `relocal.toml`**: All commands except `init` fail with a clear error
   message. Only the current working directory is checked (no upward walk).
-- **Remote directory does not exist**: `start` creates it. `sync` fails (rsync
+- **Remote directory does not exist**: `claude` creates it. `sync` fails (rsync
   reports the error). `status` reports that the directory does not exist (does
   not fail). `destroy` fails with a message that the session was not found.
-- **Claude not installed on remote**: `start` fails with a message suggesting
+- **Claude not installed on remote**: `claude` fails with a message suggesting
   `relocal remote install`.
-- **Stale FIFOs on start**: `start` refuses to proceed and instructs the user
+- **Stale FIFOs on start**: `claude` refuses to proceed and instructs the user
   to check for an existing session or run `relocal destroy`.
 
 ## Implementation
@@ -620,9 +620,9 @@ remote session name, and cleans up both on completion (including on panic, via
 
 #### FIFO Lifecycle
 
-- `start` creates both FIFOs on remote.
+- `claude` creates both FIFOs on remote.
 - Clean shutdown removes both FIFOs.
-- Stale FIFO detection: pre-create FIFOs, verify `start` refuses with error.
+- Stale FIFO detection: pre-create FIFOs, verify `claude` refuses with error.
 
 #### Sidecar
 
@@ -644,7 +644,7 @@ remote session name, and cleans up both on completion (including on panic, via
 
 #### Session Lifecycle
 
-- `start` creates remote directory, FIFOs, performs initial push, installs
+- `claude` creates remote directory, FIFOs, performs initial push, installs
   hooks.
 - On clean exit: FIFOs are removed, summary is printed.
 - `destroy` removes working directory and FIFOs.

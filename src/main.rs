@@ -76,10 +76,13 @@ fn main() {
                 }
             }
         },
-        Command::Start { session_name } => {
+        Command::Claude {
+            session_name,
+            claude_args,
+        } => {
             let (root, cfg) = load_config();
             let session = resolve_session(session_name, &root);
-            if let Err(e) = commands::start::run(&cfg, &session, &root, verbose) {
+            if let Err(e) = commands::claude::run(&cfg, &session, &root, verbose, &claude_args) {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
             }

@@ -41,9 +41,13 @@ pub enum Command {
     },
 
     /// Sync and launch an interactive Claude session on the remote.
-    Start {
+    Claude {
         /// Session name (defaults to directory name).
         session_name: Option<String>,
+
+        /// Extra arguments passed through to `claude` (after `--`).
+        #[arg(last = true)]
+        claude_args: Vec<String>,
     },
 
     /// Manually sync files between local and remote.
@@ -128,19 +132,69 @@ mod tests {
     }
 
     #[test]
-    fn start_no_session() {
-        let cli = parse(&["relocal", "start"]);
-        assert!(matches!(cli.command, Command::Start { session_name: None }));
+    fn claude_no_session() {
+        let cli = parse(&["relocal", "claude"]);
+        match &cli.command {
+            Command::Claude {
+                session_name,
+                claude_args,
+            } => {
+                assert!(session_name.is_none());
+                assert!(claude_args.is_empty());
+            }
+            _ => panic!("expected Claude"),
+        }
     }
 
     #[test]
-    fn start_with_session() {
-        let cli = parse(&["relocal", "start", "my-session"]);
+    fn claude_with_session() {
+        let cli = parse(&["relocal", "claude", "my-session"]);
         match &cli.command {
-            Command::Start { session_name } => {
+            Command::Claude {
+                session_name,
+                claude_args,
+            } => {
                 assert_eq!(session_name.as_deref(), Some("my-session"));
+                assert!(claude_args.is_empty());
             }
-            _ => panic!("expected Start"),
+            _ => panic!("expected Claude"),
+        }
+    }
+
+    #[test]
+    fn claude_with_extra_args() {
+        let cli = parse(&["relocal", "claude", "--", "--debug"]);
+        match &cli.command {
+            Command::Claude {
+                session_name,
+                claude_args,
+            } => {
+                assert!(session_name.is_none());
+                assert_eq!(claude_args, &["--debug"]);
+            }
+            _ => panic!("expected Claude"),
+        }
+    }
+
+    #[test]
+    fn claude_with_session_and_extra_args() {
+        let cli = parse(&[
+            "relocal",
+            "claude",
+            "my-session",
+            "--",
+            "--debug",
+            "--resume",
+        ]);
+        match &cli.command {
+            Command::Claude {
+                session_name,
+                claude_args,
+            } => {
+                assert_eq!(session_name.as_deref(), Some("my-session"));
+                assert_eq!(claude_args, &["--debug", "--resume"]);
+            }
+            _ => panic!("expected Claude"),
         }
     }
 
@@ -253,7 +307,7 @@ mod tests {
 
     #[test]
     fn verbosity_after_subcommand() {
-        let cli = parse(&["relocal", "start", "-vv"]);
+        let cli = parse(&["relocal", "claude", "-vv"]);
         assert_eq!(cli.verbose, 2);
     }
 }

@@ -29,7 +29,7 @@ relocal init
 relocal remote install
 
 # Start a session — syncs your repo and launches Claude on the remote
-relocal start
+relocal claude
 ```
 
 Once the session is running, Claude hooks handle syncing automatically:

@@ -11,7 +11,7 @@
 //! RELOCAL_TEST_REMOTE=$USER@localhost cargo test -- --ignored --test-threads=1
 //! ```
 
-use relocal::commands::{destroy, nuke, start, sync};
+use relocal::commands::{claude, destroy, nuke, sync};
 use relocal::config::Config;
 use relocal::hooks;
 use relocal::runner::{CommandRunner, ProcessRunner};
@@ -112,7 +112,7 @@ fn remote_dir(session: &str) -> String {
 }
 
 /// Ensures the remote session directory exists (for tests that call sync directly
-/// without going through `start::setup`).
+/// without going through `claude::setup`).
 fn ensure_remote_session_dir(remote: &str, session: &str) {
     let runner = ProcessRunner;
     runner
@@ -501,7 +501,7 @@ fn fifos_created_by_setup() {
     };
     let runner = ProcessRunner;
 
-    start::setup(&runner, &config, &session, dir.path(), false).unwrap();
+    claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
 
     assert!(remote_file_exists(
         &remote,
@@ -522,8 +522,8 @@ fn fifos_removed_by_cleanup() {
     };
     let runner = ProcessRunner;
 
-    start::setup(&runner, &config, &session, dir.path(), false).unwrap();
-    start::cleanup(&runner, &config, &session).unwrap();
+    claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
+    claude::cleanup(&runner, &config, &session).unwrap();
 
     assert!(!remote_file_exists(
         &remote,
@@ -551,7 +551,7 @@ fn stale_fifos_prevent_setup() {
         .unwrap();
 
     // Setup should fail with stale session error
-    let result = start::setup(&runner, &config, &session, dir.path(), false);
+    let result = claude::setup(&runner, &config, &session, dir.path(), false);
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(err.contains("stale session") || err.contains("FIFOs already exist"));
@@ -574,7 +574,7 @@ fn sidecar_push_request_syncs_and_acks() {
     let runner = ProcessRunner;
 
     // Setup creates remote dir + FIFOs + initial push
-    start::setup(&runner, &config, &session, dir.path(), false).unwrap();
+    claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
 
     // Start sidecar
     let sidecar_runner: std::sync::Arc<dyn CommandRunner + Send + Sync> =
@@ -627,7 +627,7 @@ fn sidecar_pull_request_syncs_and_acks() {
     };
     let runner = ProcessRunner;
 
-    start::setup(&runner, &config, &session, dir.path(), false).unwrap();
+    claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
 
     let sidecar_runner: std::sync::Arc<dyn CommandRunner + Send + Sync> =
         std::sync::Arc::new(ProcessRunner);
@@ -681,7 +681,7 @@ fn sidecar_clean_shutdown() {
     };
     let runner = ProcessRunner;
 
-    start::setup(&runner, &config, &session, dir.path(), false).unwrap();
+    claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
 
     let sidecar_runner: std::sync::Arc<dyn CommandRunner + Send + Sync> =
         std::sync::Arc::new(ProcessRunner);
@@ -820,7 +820,7 @@ fn setup_creates_dir_fifos_pushes_hooks() {
 
     std::fs::write(dir.path().join("data.txt"), "hello").unwrap();
 
-    start::setup(&runner, &config, &session, dir.path(), false).unwrap();
+    claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
 
     // Remote dir exists
     assert!(remote_file_exists(
@@ -853,8 +853,8 @@ fn destroy_removes_dir_and_fifos() {
     let runner = ProcessRunner;
 
     // Setup first
-    start::setup(&runner, &config, &session, dir.path(), false).unwrap();
-    start::cleanup(&runner, &config, &session).unwrap();
+    claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
+    claude::cleanup(&runner, &config, &session).unwrap();
 
     // Now push some data so we have a working dir
     sync::sync_push(&runner, &config, &session, dir.path(), false).unwrap();
@@ -965,7 +965,7 @@ fn status_reports_correct_info() {
     assert!(!check.status.success());
 
     // After setup: dir and FIFOs should exist
-    start::setup(&runner, &config, &session, dir.path(), false).unwrap();
+    claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
 
     let check = runner
         .run_ssh(&remote, &ssh::check_work_dir_exists(&session))
