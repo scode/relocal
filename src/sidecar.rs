@@ -155,44 +155,23 @@ mod tests {
     }
 
     #[test]
-    fn push_request_triggers_rsync_and_hook_reinjection_and_ack() {
+    fn push_request_triggers_rsync() {
         let mock = MockRunner::new();
         // rsync (push)
-        mock.add_response(MockResponse::Ok(String::new()));
-        // read settings.json (for reinject_hooks)
-        mock.add_response(MockResponse::Fail(String::new()));
-        // write settings.json
         mock.add_response(MockResponse::Ok(String::new()));
 
         handle_request(&mock, &test_config(), "s1", &repo_root(), false, "push").unwrap();
 
         let inv = mock.invocations();
-        // rsync(1) + read settings.json(1) + write settings.json(1) = 3
-        assert_eq!(inv.len(), 3);
+        // Just rsync, no hook reinjection
+        assert_eq!(inv.len(), 1);
 
-        // First: rsync with push direction
         match &inv[0] {
             Invocation::Rsync { args } => {
                 let last = args.last().unwrap();
                 assert!(last.contains("user@host:"));
             }
             _ => panic!("expected Rsync, got {:?}", inv[0]),
-        }
-
-        // Second: read settings.json
-        match &inv[1] {
-            Invocation::Ssh { command, .. } => {
-                assert!(command.contains("settings.json"));
-            }
-            _ => panic!("expected Ssh"),
-        }
-
-        // Third: write settings.json with hooks
-        match &inv[2] {
-            Invocation::Ssh { command, .. } => {
-                assert!(command.contains("relocal-hook.sh"));
-            }
-            _ => panic!("expected Ssh"),
         }
     }
 
@@ -250,8 +229,6 @@ mod tests {
         let mock = MockRunner::new();
         // First request: push
         mock.add_response(MockResponse::Ok(String::new())); // rsync
-        mock.add_response(MockResponse::Fail(String::new())); // read settings.json
-        mock.add_response(MockResponse::Ok(String::new())); // write settings.json
 
         // Second request: pull
         mock.add_response(MockResponse::Ok(String::new())); // git fsck
@@ -259,30 +236,26 @@ mod tests {
 
         // Third request: push
         mock.add_response(MockResponse::Ok(String::new())); // rsync
-        mock.add_response(MockResponse::Fail(String::new())); // read settings.json
-        mock.add_response(MockResponse::Ok(String::new())); // write settings.json
 
         handle_request(&mock, &test_config(), "s1", &repo_root(), false, "push").unwrap();
         handle_request(&mock, &test_config(), "s1", &repo_root(), false, "pull").unwrap();
         handle_request(&mock, &test_config(), "s1", &repo_root(), false, "push").unwrap();
 
         let inv = mock.invocations();
-        // push(3) + pull(2: fsck+rsync) + push(3) = 8
-        assert_eq!(inv.len(), 8);
+        // push(1) + pull(2: fsck+rsync) + push(1) = 4
+        assert_eq!(inv.len(), 4);
 
         // Verify pattern
         assert!(matches!(&inv[0], Invocation::Rsync { .. })); // push rsync
-        assert!(matches!(&inv[3], Invocation::Ssh { .. })); // pull fsck
-        assert!(matches!(&inv[4], Invocation::Rsync { .. })); // pull rsync
-        assert!(matches!(&inv[5], Invocation::Rsync { .. })); // push rsync
+        assert!(matches!(&inv[1], Invocation::Ssh { .. })); // pull fsck
+        assert!(matches!(&inv[2], Invocation::Rsync { .. })); // pull rsync
+        assert!(matches!(&inv[3], Invocation::Rsync { .. })); // push rsync
     }
 
     #[test]
     fn push_with_verbose_flag() {
         let mock = MockRunner::new();
         mock.add_response(MockResponse::Ok(String::new())); // rsync
-        mock.add_response(MockResponse::Fail(String::new())); // read settings.json
-        mock.add_response(MockResponse::Ok(String::new())); // write settings.json
 
         handle_request(&mock, &test_config(), "s1", &repo_root(), true, "push").unwrap();
 
@@ -299,8 +272,6 @@ mod tests {
     fn correct_session_name_in_operations() {
         let mock = MockRunner::new();
         mock.add_response(MockResponse::Ok(String::new())); // rsync
-        mock.add_response(MockResponse::Fail(String::new())); // read settings.json
-        mock.add_response(MockResponse::Ok(String::new())); // write settings.json
 
         handle_request(
             &mock,
@@ -313,6 +284,7 @@ mod tests {
         .unwrap();
 
         let inv = mock.invocations();
+        assert_eq!(inv.len(), 1);
         // Rsync uses session name in remote path
         match &inv[0] {
             Invocation::Rsync { args } => {
@@ -320,13 +292,6 @@ mod tests {
                 assert!(last.contains("my-project"));
             }
             _ => panic!("expected Rsync"),
-        }
-        // Hook reinjection uses session name
-        match &inv[2] {
-            Invocation::Ssh { command, .. } => {
-                assert!(command.contains("my-project"));
-            }
-            _ => panic!("expected Ssh"),
         }
     }
 }

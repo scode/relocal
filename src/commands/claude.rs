@@ -7,7 +7,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::commands::sync::sync_push;
+use crate::commands::sync::{reinject_hooks, sync_push};
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::runner::{CommandRunner, ProcessRunner};
@@ -113,9 +113,8 @@ pub fn setup(
     // 4. Initial push
     sync_push(runner, config, session_name, repo_root, verbose)?;
 
-    // 5. Install hooks (reinject after push already does this, but the spec
-    //    lists it as a separate step — sync_push handles both)
-    // Hook injection already happened in sync_push via reinject_hooks.
+    // 5. Install hooks into remote .claude/settings.json
+    reinject_hooks(runner, config, session_name)?;
 
     Ok(())
 }
@@ -177,9 +176,9 @@ mod tests {
         mock.add_response(MockResponse::Ok(String::new()));
         // 4. sync_push: rsync
         mock.add_response(MockResponse::Ok(String::new()));
-        // 4. sync_push: reinject_hooks read settings.json
+        // 5. reinject_hooks: read settings.json
         mock.add_response(MockResponse::Fail(String::new()));
-        // 4. sync_push: reinject_hooks write settings.json
+        // 5. reinject_hooks: write settings.json
         mock.add_response(MockResponse::Ok(String::new()));
 
         setup(&mock, &test_config(), "my-session", &repo_root(), false).unwrap();
@@ -236,7 +235,7 @@ mod tests {
         // rsync (push)
         assert!(matches!(&inv[5], Invocation::Rsync { .. }));
 
-        // hook reinjection (read + write)
+        // hook injection (read + write — separate from push)
         match &inv[7] {
             Invocation::Ssh { command, .. } => {
                 assert!(command.contains("relocal-hook.sh"));
@@ -302,9 +301,9 @@ mod tests {
         mock.add_response(MockResponse::Ok(String::new())); // mkdir work dir
         mock.add_response(MockResponse::Ok(String::new())); // mkdir fifos dir
         mock.add_response(MockResponse::Ok(String::new())); // create fifos
-        mock.add_response(MockResponse::Ok(String::new())); // rsync
-        mock.add_response(MockResponse::Fail(String::new())); // read settings
-        mock.add_response(MockResponse::Ok(String::new())); // write settings
+        mock.add_response(MockResponse::Ok(String::new())); // rsync (push)
+        mock.add_response(MockResponse::Fail(String::new())); // read settings (inject)
+        mock.add_response(MockResponse::Ok(String::new())); // write settings (inject)
 
         let config = Config::parse("remote = \"deploy@prod\"").unwrap();
         setup(&mock, &config, "s1", &repo_root(), false).unwrap();
@@ -330,9 +329,9 @@ mod tests {
         mock.add_response(MockResponse::Ok(String::new())); // mkdir work dir
         mock.add_response(MockResponse::Ok(String::new())); // mkdir fifos dir
         mock.add_response(MockResponse::Ok(String::new())); // create fifos
-        mock.add_response(MockResponse::Ok(String::new())); // rsync
-        mock.add_response(MockResponse::Fail(String::new())); // read settings
-        mock.add_response(MockResponse::Ok(String::new())); // write settings
+        mock.add_response(MockResponse::Ok(String::new())); // rsync (push)
+        mock.add_response(MockResponse::Fail(String::new())); // read settings (inject)
+        mock.add_response(MockResponse::Ok(String::new())); // write settings (inject)
 
         setup(&mock, &test_config(), "s1", &repo_root(), true).unwrap();
 
