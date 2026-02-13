@@ -5,25 +5,58 @@
 > Bugs or misconfiguration can delete local files. There are safety checks
 > but the tool has not been battle-tested. Use at your own risk.
 
-Run Claude Code on a remote Linux box while working locally. Your local repo is
-synced bidirectionally via rsync, and Claude hooks on the remote trigger syncs
-automatically.
+relocal runs Claude Code on a remote Ubuntu host while your local repo stays
+the source of truth through automatic bidirectional sync.
 
-See `SPEC.md` for the full design document.
+## User Guide
 
-## Quick start
+### Prerequisites
 
-Prerequisites: a remote Ubuntu box with passwordless SSH (`ssh user@host` works)
-and passwordless `sudo`.
+Local machine:
+- `ssh`
+- `rsync`
+- Rust toolchain (if installing with `cargo install --path .`)
+
+Remote machine:
+- Ubuntu host reachable over SSH
+
+### Remote Setup (run as root on Ubuntu)
 
 ```sh
-# Install relocal
+# Run on the remote Ubuntu box as root.
+# Replace values first:
+NEW_USER="alice"
+SSH_PUBKEY="ssh-ed25519 AAAA... yourname@laptop"
+
+# 1) Create user
+adduser --disabled-password --gecos "" "$NEW_USER"
+usermod -aG sudo "$NEW_USER"
+
+# 2) Install SSH key for that user
+install -d -m 700 -o "$NEW_USER" -g "$NEW_USER" "/home/$NEW_USER/.ssh"
+printf '%s\n' "$SSH_PUBKEY" > "/home/$NEW_USER/.ssh/authorized_keys"
+chown "$NEW_USER:$NEW_USER" "/home/$NEW_USER/.ssh/authorized_keys"
+chmod 600 "/home/$NEW_USER/.ssh/authorized_keys"
+
+# 3) Grant passwordless sudo
+printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$NEW_USER" > "/etc/sudoers.d/90-$NEW_USER-relocal"
+chmod 440 "/etc/sudoers.d/90-$NEW_USER-relocal"
+visudo -cf "/etc/sudoers.d/90-$NEW_USER-relocal"
+
+# 4) Verify passwordless sudo works
+su - "$NEW_USER" -c 'sudo -n true && echo "passwordless sudo OK"'
+```
+
+### Quick Start
+
+```sh
+# Install relocal locally
 cargo install --path .
 
 # In your project directory, create a config file
 cd ~/my-project
 relocal init
-# Follow the prompts — at minimum, enter your remote (e.g. user@host)
+# Follow the prompts and set remote to user@host
 
 # Install dependencies on the remote (Rust, Node, Claude Code, etc.)
 relocal remote install
@@ -32,27 +65,29 @@ relocal remote install
 relocal claude
 ```
 
-Once the session is running, Claude hooks handle syncing automatically:
-- Your local files are pushed to the remote before each prompt
-- Claude's changes are pulled back after each response
+Once the session is running, hooks keep local and remote in sync automatically.
 
-After the session ends, you can manually sync:
+### Common Commands
 
 ```sh
-relocal sync pull    # fetch remote changes
-relocal sync push    # push local changes
+relocal sync pull [session-name]  # fetch remote changes to local
+relocal sync push [session-name]  # push local changes to remote
+relocal status [session-name]     # show session info
+relocal list                      # list sessions on the remote
+relocal destroy [session-name]    # remove one session's remote directory
+relocal remote nuke               # wipe all relocal state on the remote
 ```
 
-Other commands:
+## Developer Guide
+
+### Local Development
 
 ```sh
-relocal list                  # list sessions on the remote
-relocal status                # show session info
-relocal destroy [session]     # remove a session's remote directory
-relocal remote nuke           # wipe all relocal state on the remote
+cargo build
+cargo run -- --help
 ```
 
-## Running tests
+### Testing
 
 Unit tests (no remote needed):
 
@@ -60,10 +95,15 @@ Unit tests (no remote needed):
 cargo test
 ```
 
-Integration tests require SSH access to a remote host (can be localhost):
+Integration tests require SSH access to a remote host (localhost works):
 
 ```sh
 RELOCAL_TEST_REMOTE=$USER@localhost cargo test -- --ignored --test-threads=1
 ```
 
-The `--test-threads=1` is required because integration tests share remote state.
+The `--test-threads=1` flag is required because integration tests share remote
+state.
+
+### Design Notes
+
+See [`SPEC.md`](SPEC.md) for the full design and architecture details.
