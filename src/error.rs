@@ -15,7 +15,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(
-        "relocal.toml not found (walked up from {start_dir}). Run `relocal init` to create one."
+        "relocal.toml not found in {start_dir}. Run relocal from the project root, or run `relocal init` to create one."
     )]
     ConfigNotFound { start_dir: PathBuf },
 
@@ -36,4 +36,7 @@ pub enum Error {
 
     #[error("stale session {session}: FIFOs already exist. Another session may be running. Use `relocal destroy {session}` if the previous session crashed.")]
     StaleSession { session: String },
+
+    #[error("refusing to pull: remote session {session} failed git fsck (not a git repo or repository is corrupted).\nStderr: {stderr}")]
+    RemoteGitFsckFailed { session: String, stderr: String },
 }

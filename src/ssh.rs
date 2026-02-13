@@ -4,6 +4,8 @@
 //! Orchestration code passes the returned strings to [`CommandRunner::run_ssh`]
 //! or [`CommandRunner::run_ssh_interactive`].
 
+use shell_quote::{Bash, QuoteRefExt};
+
 /// Remote base directory for all relocal state.
 const RELOCAL_DIR: &str = "~/relocal";
 
@@ -66,8 +68,12 @@ pub fn read_request_fifo(session: &str) -> String {
 }
 
 /// Command to write an ack message to the ack FIFO.
+///
+/// The message is shell-quoted to prevent injection via single quotes
+/// or other metacharacters in error messages.
 pub fn write_ack(session: &str, message: &str) -> String {
-    format!("echo '{}' > {}", message, fifo_ack_path(session))
+    let quoted: String = message.quoted(Bash);
+    format!("echo {} > {}", quoted, fifo_ack_path(session))
 }
 
 /// Command to read the remote `.claude/settings.json` for a session.
@@ -118,6 +124,19 @@ pub fn list_sessions() -> String {
 /// Command to check whether the remote working directory exists.
 pub fn check_work_dir_exists(session: &str) -> String {
     format!("test -d {}", remote_work_dir(session))
+}
+
+/// Command to verify the remote session directory is a valid git repository.
+///
+/// Runs `git fsck --strict --full --no-dangling` in the session's working
+/// directory. This is used as a safety gate before pulling: if the remote
+/// is not a git repo (or is corrupted), we refuse to rsync `--delete`
+/// into the local tree.
+pub fn git_fsck(session: &str) -> String {
+    format!(
+        "cd {} && git fsck --strict --full --no-dangling",
+        remote_work_dir(session)
+    )
 }
 
 /// Command to check whether `claude` is on PATH.
@@ -192,9 +211,23 @@ mod tests {
 
     #[test]
     fn write_ack_format() {
-        assert_eq!(write_ack("s1", "ok"), "echo 'ok' > ~/relocal/.fifos/s1-ack");
+        let ack = write_ack("s1", "ok");
+        assert!(ack.contains("ok"));
+        assert!(ack.ends_with("~/relocal/.fifos/s1-ack"));
+
         let err_ack = write_ack("s1", "error:rsync failed");
         assert!(err_ack.contains("error:rsync failed"));
+        assert!(err_ack.ends_with("~/relocal/.fifos/s1-ack"));
+    }
+
+    #[test]
+    fn write_ack_escapes_single_quotes() {
+        let ack = write_ack("s1", "error:it's broken");
+        // Must not produce unbalanced quotes — shell_quote handles this
+        assert!(ack.contains("it"));
+        assert!(ack.contains("broken"));
+        // The raw string "error:it's broken" with unescaped quote must NOT appear
+        assert!(!ack.contains("echo 'error:it's broken'"));
     }
 
     #[test]
@@ -230,6 +263,15 @@ mod tests {
         let cmd = start_claude_session("s1");
         assert!(cmd.contains("cd ~/relocal/s1"));
         assert!(cmd.contains("claude --dangerously-skip-permissions"));
+    }
+
+    #[test]
+    fn git_fsck_format() {
+        let cmd = git_fsck("s1");
+        assert_eq!(
+            cmd,
+            "cd ~/relocal/s1 && git fsck --strict --full --no-dangling"
+        );
     }
 
     #[test]

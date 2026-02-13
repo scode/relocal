@@ -42,6 +42,14 @@ fn make_local_repo(remote: &str) -> (tempfile::TempDir, Config) {
 
 fn make_local_repo_with_excludes(remote: &str, excludes: &[&str]) -> (tempfile::TempDir, Config) {
     let dir = tempfile::tempdir().expect("create temp dir");
+
+    // Initialize a git repo so the remote will pass git fsck on pull.
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(dir.path())
+        .output()
+        .expect("git init");
+
     let mut toml = format!("remote = \"{remote}\"\n");
     if !excludes.is_empty() {
         let list = excludes

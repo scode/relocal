@@ -197,19 +197,26 @@ mod tests {
     }
 
     #[test]
-    fn pull_request_triggers_rsync_only() {
+    fn pull_request_triggers_fsck_then_rsync() {
         let mock = MockRunner::new();
+        // git fsck
+        mock.add_response(MockResponse::Ok(String::new()));
         // rsync (pull)
         mock.add_response(MockResponse::Ok(String::new()));
 
         handle_request(&mock, &test_config(), "s1", &repo_root(), false, "pull").unwrap();
 
         let inv = mock.invocations();
-        // Only rsync, no hook reinjection
-        assert_eq!(inv.len(), 1);
+        // git fsck (1) + rsync (1), no hook reinjection
+        assert_eq!(inv.len(), 2);
         match &inv[0] {
+            Invocation::Ssh { command, .. } => {
+                assert!(command.contains("git fsck"));
+            }
+            _ => panic!("expected Ssh for git fsck"),
+        }
+        match &inv[1] {
             Invocation::Rsync { args } => {
-                // Pull direction: remote first, local second
                 let last = args.last().unwrap();
                 assert!(last.starts_with("/home/user/my-project/"));
             }
@@ -247,6 +254,7 @@ mod tests {
         mock.add_response(MockResponse::Ok(String::new())); // write settings.json
 
         // Second request: pull
+        mock.add_response(MockResponse::Ok(String::new())); // git fsck
         mock.add_response(MockResponse::Ok(String::new())); // rsync
 
         // Third request: push
@@ -259,13 +267,14 @@ mod tests {
         handle_request(&mock, &test_config(), "s1", &repo_root(), false, "push").unwrap();
 
         let inv = mock.invocations();
-        // push(3) + pull(1) + push(3) = 7
-        assert_eq!(inv.len(), 7);
+        // push(3) + pull(2: fsck+rsync) + push(3) = 8
+        assert_eq!(inv.len(), 8);
 
-        // Verify alternating pattern: rsync types
+        // Verify pattern
         assert!(matches!(&inv[0], Invocation::Rsync { .. })); // push rsync
-        assert!(matches!(&inv[3], Invocation::Rsync { .. })); // pull rsync
-        assert!(matches!(&inv[4], Invocation::Rsync { .. })); // push rsync
+        assert!(matches!(&inv[3], Invocation::Ssh { .. })); // pull fsck
+        assert!(matches!(&inv[4], Invocation::Rsync { .. })); // pull rsync
+        assert!(matches!(&inv[5], Invocation::Rsync { .. })); // push rsync
     }
 
     #[test]

@@ -38,6 +38,10 @@ pub fn sync_push(
 }
 
 /// Pulls remote files to local.
+///
+/// Before running rsync, verifies the remote session directory is a valid
+/// git repository via `git fsck`. This prevents `rsync --delete` from
+/// wiping the local tree if the remote was destroyed, emptied, or corrupted.
 pub fn sync_pull(
     runner: &dyn CommandRunner,
     config: &Config,
@@ -45,6 +49,16 @@ pub fn sync_pull(
     repo_root: &Path,
     verbose: bool,
 ) -> Result<()> {
+    // Safety gate: verify remote is a healthy git repo before pulling
+    eprintln!("Verifying remote git repository...");
+    let fsck_result = runner.run_ssh(&config.remote, &ssh::git_fsck(session_name))?;
+    if !fsck_result.status.success() {
+        return Err(crate::error::Error::RemoteGitFsckFailed {
+            session: session_name.to_string(),
+            stderr: fsck_result.stderr,
+        });
+    }
+
     eprintln!("Pulling from remote...");
     let args = build_rsync_args(config, Direction::Pull, session_name, repo_root, verbose);
     let rsync_result = runner.run_rsync(&args)?;
@@ -131,27 +145,53 @@ mod tests {
     }
 
     #[test]
-    fn pull_runs_rsync_with_pull_direction() {
+    fn pull_runs_fsck_then_rsync_with_pull_direction() {
         let mock = MockRunner::new();
+        // git fsck
+        mock.add_response(MockResponse::Ok(String::new()));
         // rsync
         mock.add_response(MockResponse::Ok(String::new()));
 
         sync_pull(&mock, &test_config(), "s1", &repo_root(), false).unwrap();
 
         let inv = mock.invocations();
-        assert_eq!(inv.len(), 1);
+        assert_eq!(inv.len(), 2);
+
+        // First: git fsck via SSH
         match &inv[0] {
+            Invocation::Ssh { command, .. } => {
+                assert!(command.contains("git fsck"));
+            }
+            _ => panic!("expected Ssh for git fsck, got {:?}", inv[0]),
+        }
+
+        // Second: rsync with pull direction
+        match &inv[1] {
             Invocation::Rsync { args } => {
-                // Verify pull direction: remote path first, local path second
                 let last = args.last().unwrap();
                 assert!(last.starts_with("/home/user/my-project/"));
                 let second_last = &args[args.len() - 2];
                 assert!(second_last.contains("user@host:"));
-                // Verify settings.json is NOT included (pull direction)
                 assert!(!args.contains(&"--include=.claude/settings.json".to_string()));
             }
-            _ => panic!("expected Rsync, got {:?}", inv[0]),
+            _ => panic!("expected Rsync, got {:?}", inv[1]),
         }
+    }
+
+    #[test]
+    fn pull_refuses_when_fsck_fails() {
+        let mock = MockRunner::new();
+        // git fsck fails
+        mock.add_response(MockResponse::Fail("fatal: not a git repository".into()));
+
+        let result = sync_pull(&mock, &test_config(), "s1", &repo_root(), false);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("git fsck"));
+
+        // Only the fsck call was made — rsync was never invoked
+        let inv = mock.invocations();
+        assert_eq!(inv.len(), 1);
     }
 
     #[test]
@@ -222,15 +262,18 @@ mod tests {
     #[test]
     fn pull_does_not_reinject_hooks() {
         let mock = MockRunner::new();
+        // git fsck
+        mock.add_response(MockResponse::Ok(String::new()));
         // rsync only
         mock.add_response(MockResponse::Ok(String::new()));
 
         sync_pull(&mock, &test_config(), "s1", &repo_root(), false).unwrap();
 
         let inv = mock.invocations();
-        // Only rsync — no SSH calls for settings.json
-        assert_eq!(inv.len(), 1);
-        assert!(matches!(&inv[0], Invocation::Rsync { .. }));
+        // git fsck (1) + rsync (1) — no SSH calls for settings.json
+        assert_eq!(inv.len(), 2);
+        assert!(matches!(&inv[0], Invocation::Ssh { .. }));
+        assert!(matches!(&inv[1], Invocation::Rsync { .. }));
     }
 
     #[test]
@@ -257,12 +300,16 @@ mod tests {
     #[test]
     fn pull_verbose_passes_through() {
         let mock = MockRunner::new();
+        // git fsck
+        mock.add_response(MockResponse::Ok(String::new()));
+        // rsync
         mock.add_response(MockResponse::Ok(String::new()));
 
         sync_pull(&mock, &test_config(), "s1", &repo_root(), true).unwrap();
 
         let inv = mock.invocations();
-        match &inv[0] {
+        // rsync is the second invocation (after fsck)
+        match &inv[1] {
             Invocation::Rsync { args } => {
                 assert!(args.contains(&"--progress".to_string()));
             }
