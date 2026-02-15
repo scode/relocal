@@ -5,18 +5,33 @@
 //! pre-configured responses, enabling orchestration tests without real SSH or rsync.
 
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::process::ExitStatus;
 
 use crate::error::{Error, Result};
+use crate::rsync::{Direction, RsyncParams};
 use crate::runner::{CommandOutput, CommandRunner};
 
 /// What kind of command was invoked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Invocation {
-    Ssh { remote: String, command: String },
-    SshInteractive { remote: String, command: String },
-    Rsync { args: Vec<String> },
-    Local { program: String, args: Vec<String> },
+    Ssh {
+        remote: String,
+        command: String,
+    },
+    SshInteractive {
+        remote: String,
+        command: String,
+    },
+    Rsync {
+        args: Vec<String>,
+        direction: Direction,
+        local_path: PathBuf,
+    },
+    Local {
+        program: String,
+        args: Vec<String>,
+    },
 }
 
 /// Pre-configured result for a single mock invocation.
@@ -142,9 +157,11 @@ impl CommandRunner for MockRunner {
         }
     }
 
-    fn run_rsync(&self, args: &[String]) -> Result<CommandOutput> {
+    fn run_rsync(&self, params: &RsyncParams) -> Result<CommandOutput> {
         self.invocations.borrow_mut().push(Invocation::Rsync {
-            args: args.to_vec(),
+            args: params.args().to_vec(),
+            direction: params.direction(),
+            local_path: params.local_path().to_path_buf(),
         });
         let response = self.next_response();
         self.respond(response)
@@ -206,7 +223,12 @@ mod tests {
         let mock = MockRunner::new();
         mock.add_response(MockResponse::Fail("bad".into()));
 
-        let out = mock.run_rsync(&["--help".into()]).unwrap();
+        let params = RsyncParams::for_test(
+            vec!["--help".into()],
+            Direction::Push,
+            PathBuf::from("/tmp"),
+        );
+        let out = mock.run_rsync(&params).unwrap();
         assert!(!out.status.success());
         assert_eq!(out.stderr, "bad");
     }

@@ -2,10 +2,10 @@
 //!
 //! This module builds the full argument list for rsync, including the complex
 //! `.claude/` directory filtering. The functions are pure (no I/O) so they can
-//! be thoroughly unit-tested. The caller passes the resulting `Vec<String>` to
+//! be thoroughly unit-tested. The caller passes the resulting [`RsyncParams`] to
 //! [`CommandRunner::run_rsync`].
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::config::Config;
 use crate::ssh::remote_work_dir;
@@ -15,6 +15,47 @@ use crate::ssh::remote_work_dir;
 pub enum Direction {
     Push,
     Pull,
+}
+
+/// Structured rsync invocation carrying both the argument list and metadata
+/// needed for safety validation before execution.
+///
+/// Fields are private to enforce that `args`, `direction`, and `local_path` are
+/// always consistent — they must all originate from the same
+/// [`build_rsync_args`] call. [`ProcessRunner::run_rsync`](crate::runner::ProcessRunner)
+/// uses `direction` and `local_path` to validate the local destination on pull,
+/// refusing to run `rsync --delete` against a directory that doesn't contain
+/// `relocal.toml`.
+#[derive(Debug)]
+pub struct RsyncParams {
+    args: Vec<String>,
+    direction: Direction,
+    local_path: PathBuf,
+}
+
+impl RsyncParams {
+    pub fn args(&self) -> &[String] {
+        &self.args
+    }
+
+    pub fn direction(&self) -> Direction {
+        self.direction
+    }
+
+    pub fn local_path(&self) -> &Path {
+        &self.local_path
+    }
+
+    /// Test-only constructor for unit tests that need to exercise
+    /// [`CommandRunner::run_rsync`](crate::runner::CommandRunner) directly.
+    #[cfg(test)]
+    pub fn for_test(args: Vec<String>, direction: Direction, local_path: PathBuf) -> Self {
+        Self {
+            args,
+            direction,
+            local_path,
+        }
+    }
 }
 
 /// Builds the complete rsync argument list for a sync operation.
@@ -27,7 +68,7 @@ pub fn build_rsync_args(
     session_name: &str,
     repo_root: &Path,
     verbose: bool,
-) -> Vec<String> {
+) -> RsyncParams {
     let mut args = Vec::new();
 
     // Base flags
@@ -65,7 +106,11 @@ pub fn build_rsync_args(
         }
     }
 
-    args
+    RsyncParams {
+        args,
+        direction,
+        local_path: repo_root.to_path_buf(),
+    }
 }
 
 #[cfg(test)]
@@ -83,15 +128,17 @@ mod tests {
 
     #[test]
     fn base_flags_present() {
-        let args = build_rsync_args(&minimal_config(), Direction::Push, "s1", &root(), false);
-        assert!(args.contains(&"-az".to_string()));
-        assert!(args.contains(&"--delete".to_string()));
+        let params = build_rsync_args(&minimal_config(), Direction::Push, "s1", &root(), false);
+        assert!(params.args().contains(&"-az".to_string()));
+        assert!(params.args().contains(&"--delete".to_string()));
     }
 
     #[test]
     fn gitignore_filter_included() {
-        let args = build_rsync_args(&minimal_config(), Direction::Push, "s1", &root(), false);
-        assert!(args.contains(&"--filter=:- .gitignore".to_string()));
+        let params = build_rsync_args(&minimal_config(), Direction::Push, "s1", &root(), false);
+        assert!(params
+            .args()
+            .contains(&"--filter=:- .gitignore".to_string()));
     }
 
     #[test]
@@ -103,49 +150,59 @@ exclude = [".env", "secrets/"]
 "#,
         )
         .unwrap();
-        let args = build_rsync_args(&config, Direction::Push, "s1", &root(), false);
-        assert!(args.contains(&"--exclude=.env".to_string()));
-        assert!(args.contains(&"--exclude=secrets/".to_string()));
+        let params = build_rsync_args(&config, Direction::Push, "s1", &root(), false);
+        assert!(params.args().contains(&"--exclude=.env".to_string()));
+        assert!(params.args().contains(&"--exclude=secrets/".to_string()));
     }
 
     #[test]
     fn claude_dir_excluded() {
-        let args = build_rsync_args(&minimal_config(), Direction::Push, "s1", &root(), false);
-        assert!(args.contains(&"--exclude=.claude/".to_string()));
+        let params = build_rsync_args(&minimal_config(), Direction::Push, "s1", &root(), false);
+        assert!(params.args().contains(&"--exclude=.claude/".to_string()));
     }
 
     #[test]
     fn claude_dir_excluded_on_pull() {
-        let args = build_rsync_args(&minimal_config(), Direction::Pull, "s1", &root(), false);
-        assert!(args.contains(&"--exclude=.claude/".to_string()));
+        let params = build_rsync_args(&minimal_config(), Direction::Pull, "s1", &root(), false);
+        assert!(params.args().contains(&"--exclude=.claude/".to_string()));
     }
 
     #[test]
     fn push_source_dest_paths() {
-        let args = build_rsync_args(&minimal_config(), Direction::Push, "s1", &root(), false);
-        let last_two: Vec<&String> = args.iter().rev().take(2).collect();
-        // dest is last, source is second-to-last
+        let params = build_rsync_args(&minimal_config(), Direction::Push, "s1", &root(), false);
+        let last_two: Vec<&String> = params.args().iter().rev().take(2).collect();
         assert_eq!(last_two[1], "/home/user/my-project/");
         assert_eq!(last_two[0], "user@host:~/relocal/s1/");
     }
 
     #[test]
     fn pull_source_dest_paths() {
-        let args = build_rsync_args(&minimal_config(), Direction::Pull, "s1", &root(), false);
-        let last_two: Vec<&String> = args.iter().rev().take(2).collect();
+        let params = build_rsync_args(&minimal_config(), Direction::Pull, "s1", &root(), false);
+        let last_two: Vec<&String> = params.args().iter().rev().take(2).collect();
         assert_eq!(last_two[1], "user@host:~/relocal/s1/");
         assert_eq!(last_two[0], "/home/user/my-project/");
     }
 
     #[test]
     fn verbose_adds_progress() {
-        let args = build_rsync_args(&minimal_config(), Direction::Push, "s1", &root(), true);
-        assert!(args.contains(&"--progress".to_string()));
+        let params = build_rsync_args(&minimal_config(), Direction::Push, "s1", &root(), true);
+        assert!(params.args().contains(&"--progress".to_string()));
     }
 
     #[test]
     fn non_verbose_no_progress() {
-        let args = build_rsync_args(&minimal_config(), Direction::Push, "s1", &root(), false);
-        assert!(!args.contains(&"--progress".to_string()));
+        let params = build_rsync_args(&minimal_config(), Direction::Push, "s1", &root(), false);
+        assert!(!params.args().contains(&"--progress".to_string()));
+    }
+
+    #[test]
+    fn params_carry_direction_and_local_path() {
+        let push = build_rsync_args(&minimal_config(), Direction::Push, "s1", &root(), false);
+        assert_eq!(push.direction(), Direction::Push);
+        assert_eq!(push.local_path(), root());
+
+        let pull = build_rsync_args(&minimal_config(), Direction::Pull, "s1", &root(), false);
+        assert_eq!(pull.direction(), Direction::Pull);
+        assert_eq!(pull.local_path(), root());
     }
 }

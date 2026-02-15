@@ -314,7 +314,7 @@ mod tests {
         for i in &inv {
             match i {
                 Invocation::Ssh { remote, .. } => assert_eq!(remote, "deploy@prod"),
-                Invocation::Rsync { args } => {
+                Invocation::Rsync { args, .. } => {
                     let last = args.last().unwrap();
                     assert!(last.contains("deploy@prod"));
                 }
@@ -339,7 +339,7 @@ mod tests {
 
         let inv = mock.invocations();
         match &inv[5] {
-            Invocation::Rsync { args } => {
+            Invocation::Rsync { args, .. } => {
                 assert!(args.contains(&"--progress".to_string()));
             }
             _ => panic!("expected Rsync"),

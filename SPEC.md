@@ -68,8 +68,7 @@ ensures no interference between sessions.
 
 ## CLI Commands
 
-All commands except `init` require a `relocal.toml` to be found by walking up
-from the current directory.
+All commands except `init` require a `relocal.toml` in the current directory.
 
 Global flags:
 - `-v` / `-vv` / `-vvv`: Increase log verbosity (INFO / DEBUG / TRACE).
@@ -447,10 +446,16 @@ mediates all syncs triggered by remote hooks.
 - **SSH connection drop**: The main process detects the SSH child process exit,
   terminates the sidecar, attempts FIFO cleanup, and prints a warning with
   recovery instructions (use `relocal sync push`/`pull`).
-- **Pull safety**: Before any remote→local sync (manual or sidecar-triggered),
-  `git fsck --strict --full --no-dangling` is run on the remote session
-  directory. If it fails, the pull is refused to prevent `rsync --delete` from
-  wiping the local tree.
+- **Pull safety — remote validation**: Before any remote→local sync (manual or
+  sidecar-triggered), `git fsck --strict --full --no-dangling` is run on the
+  remote session directory. If it fails, the pull is refused to prevent
+  `rsync --delete` from wiping the local tree.
+- **Pull safety — local destination validation**: The command runner validates
+  the local pull target before invoking rsync. It canonicalizes the path and
+  verifies that `relocal.toml` exists there. This is a last line of defense
+  against a bug in higher-level code passing the wrong `repo_root` to
+  `rsync --delete`. Push does not validate (the destructive side of `--delete`
+  on push is the remote, not local).
 - **Missing `relocal.toml`**: All commands except `init` fail with a clear error
   message. Only the current working directory is checked (no upward walk).
 - **Remote directory does not exist**: `claude` creates it. `sync` fails (rsync
@@ -503,7 +508,8 @@ Code and design choices should favor testability. Specifically:
   - Repo root discovery: `&Path` (CWD) → `Result<PathBuf, Error>`
     (testable with temp directories; only checks given dir, no upward walk)
   - rsync argument construction: `(&Config, Direction, &str)` →
-    `Vec<String>` (includes all `.claude/` filter logic)
+    `RsyncParams` (carries the argument list plus `direction` and `local_path`
+    metadata used by the command runner for safety validation)
   - Hook JSON merging: `(Option<serde_json::Value>, &str)` →
     `serde_json::Value`
 

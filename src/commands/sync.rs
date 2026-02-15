@@ -24,8 +24,8 @@ pub fn sync_push(
     verbose: bool,
 ) -> Result<()> {
     info!("Pushing to remote...");
-    let args = build_rsync_args(config, Direction::Push, session_name, repo_root, verbose);
-    let rsync_result = runner.run_rsync(&args)?;
+    let params = build_rsync_args(config, Direction::Push, session_name, repo_root, verbose);
+    let rsync_result = runner.run_rsync(&params)?;
     if !rsync_result.status.success() {
         return Err(crate::error::Error::CommandFailed {
             command: "rsync".to_string(),
@@ -60,8 +60,8 @@ pub fn sync_pull(
     }
 
     info!("Pulling from remote...");
-    let args = build_rsync_args(config, Direction::Pull, session_name, repo_root, verbose);
-    let rsync_result = runner.run_rsync(&args)?;
+    let params = build_rsync_args(config, Direction::Pull, session_name, repo_root, verbose);
+    let rsync_result = runner.run_rsync(&params)?;
     if !rsync_result.status.success() {
         return Err(crate::error::Error::CommandFailed {
             command: "rsync".to_string(),
@@ -127,7 +127,7 @@ mod tests {
         let inv = mock.invocations();
         assert_eq!(inv.len(), 1);
         match &inv[0] {
-            Invocation::Rsync { args } => {
+            Invocation::Rsync { args, .. } => {
                 // Verify push direction: local path first, remote path second
                 let last = args.last().unwrap();
                 assert!(last.contains("user@host:"));
@@ -163,7 +163,7 @@ mod tests {
 
         // Second: rsync with pull direction
         match &inv[1] {
-            Invocation::Rsync { args } => {
+            Invocation::Rsync { args, .. } => {
                 let last = args.last().unwrap();
                 assert!(last.starts_with("/home/user/my-project/"));
                 let second_last = &args[args.len() - 2];
@@ -214,7 +214,7 @@ mod tests {
 
         let inv = mock.invocations();
         match &inv[0] {
-            Invocation::Rsync { args } => {
+            Invocation::Rsync { args, .. } => {
                 assert!(args.contains(&"--progress".to_string()));
             }
             _ => panic!("expected Rsync"),
@@ -234,7 +234,7 @@ mod tests {
         let inv = mock.invocations();
         // rsync is the second invocation (after fsck)
         match &inv[1] {
-            Invocation::Rsync { args } => {
+            Invocation::Rsync { args, .. } => {
                 assert!(args.contains(&"--progress".to_string()));
             }
             _ => panic!("expected Rsync"),
