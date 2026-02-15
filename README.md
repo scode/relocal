@@ -6,7 +6,11 @@
 > but the tool has not been battle-tested. Use at your own risk.
 
 relocal runs Claude Code on a remote Ubuntu host while your local repo stays
-the source of truth through automatic bidirectional sync.
+the source of truth through automatic bidirectional sync. When you submit a
+prompt, local changes are pushed to the remote before Claude sees them; when
+Claude finishes responding, its changes are pulled back. This lets you review
+and edit code locally in your editor while Claude Code runs in your terminal,
+with no manual synchronization.
 
 ## User Guide
 
