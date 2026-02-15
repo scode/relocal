@@ -1,9 +1,9 @@
 # relocal
 
-> **WARNING: EARLY PROTOTYPE — NOT RECOMMENDED FOR USE YET.**
+> **WARNING: EARLY PROTOTYPE — ROUGH EDGES EXPECTED.**
 >
 > Bugs or misconfiguration can delete local files. There are safety checks
-> but the tool has not been battle-tested. Use at your own risk.
+> but the tool has not been battle-tested.
 
 relocal runs Claude Code on a remote Ubuntu host while your local repo stays
 the source of truth through automatic bidirectional sync. When you submit a
