@@ -16,7 +16,15 @@ with no manual synchronization.
 
 `relocal` runs Claude remotely with `--dangerously-skip-permissions` and syncs
 your repo bidirectionally with `rsync --delete`, including the entire `.git/`
-directory. This is a high-trust workflow.
+directory. These rsync operations are triggered by Claude hooks: `UserPromptSubmit`
+pushes local changes before Claude processes your prompt, and `Stop` pulls
+remote changes back after Claude finishes a response.
+
+### Caveats
+
+This design is intended to provide enough isolation to run Claude with
+`--dangerously-skip-permissions` in many setups, but there are real caveats and
+exposure paths you should treat as in-scope risk.
 
 If your remote is `localhost` (or the same machine/account as your
 workstation), there is no real isolation. In that setup, remote execution is
