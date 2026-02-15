@@ -12,6 +12,43 @@ Claude finishes responding, its changes are pulled back. This lets you review
 and edit code locally in your editor while Claude Code runs in your terminal,
 with no manual synchronization.
 
+## Security Model and Host Exposure
+
+`relocal` runs Claude remotely with `--dangerously-skip-permissions` and syncs
+your repo bidirectionally with `rsync --delete`, including the entire `.git/`
+directory. This is a high-trust workflow.
+
+If your remote is `localhost` (or the same machine/account as your
+workstation), there is no real isolation. In that setup, remote execution is
+effectively local unsandboxed execution.
+
+Because `.git/` is synced both directions, a compromised or misused remote can
+affect local host behavior after a pull. Important examples:
+- `.git/hooks/*` can be modified remotely and later execute locally when you
+  run Git commands.
+- `.git/config` can be modified remotely (for example `core.hooksPath`,
+  `sshCommand`, credential helpers, remotes, signing programs), which can
+  trigger local command execution or credential leakage.
+- Full Git metadata is exposed remotely: history, reflogs, stashes, and
+  unreachable objects may contain sensitive data you thought was removed.
+- `rsync --delete` over `.git/` can propagate ref/config/state tampering back
+  to local even when repository object integrity checks pass.
+
+`git fsck` checks in relocal reduce accidental destructive pulls, but they do
+not make remote-sourced `.git` content trustworthy.
+
+**Operational expectations:**
+- Treat the remote host as disposable sandbox infrastructure, not a trusted
+  long-lived environment.
+- Prefer a dedicated throwaway VM/user and a dedicated local clone for relocal
+  sessions.
+- Do not authenticate to external services from the remote sandbox (GitHub CLI,
+  cloud CLIs, package registries, databases, internal systems, etc.).
+- Claude authentication on the remote is the only expected exception needed for
+  relocal to function.
+- Keep sensitive credentials and privileged operations on your local machine.
+- If credentials are entered on the remote, rotate/revoke them promptly.
+
 ## User Guide
 
 ### Prerequisites
