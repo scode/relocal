@@ -1,8 +1,8 @@
-//! Repo root discovery by walking up the directory tree looking for `relocal.toml`.
+//! Repo root discovery — checks only the current directory for `relocal.toml`.
 //!
-//! This mirrors the common pattern used by tools like git (`.git/`) and cargo
-//! (`Cargo.toml`): start from the current directory and walk upward until the
-//! marker file is found. The nearest match wins.
+//! Unlike tools that walk up the directory tree (git, cargo), relocal intentionally
+//! only checks the given directory. This prevents accidentally discovering a
+//! `relocal.toml` high in the tree and syncing an unexpectedly large directory.
 
 use std::path::{Path, PathBuf};
 

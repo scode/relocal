@@ -169,7 +169,7 @@ mod tests {
         assert_eq!(inv.len(), 1);
 
         match &inv[0] {
-            Invocation::Rsync { args } => {
+            Invocation::Rsync { args, .. } => {
                 let last = args.last().unwrap();
                 assert!(last.contains("user@host:"));
             }
@@ -197,7 +197,7 @@ mod tests {
             _ => panic!("expected Ssh for git fsck"),
         }
         match &inv[1] {
-            Invocation::Rsync { args } => {
+            Invocation::Rsync { args, .. } => {
                 let last = args.last().unwrap();
                 assert!(last.starts_with("/home/user/my-project/"));
             }
@@ -263,7 +263,7 @@ mod tests {
 
         let inv = mock.invocations();
         match &inv[0] {
-            Invocation::Rsync { args } => {
+            Invocation::Rsync { args, .. } => {
                 assert!(args.contains(&"--progress".to_string()));
             }
             _ => panic!("expected Rsync"),
@@ -289,7 +289,7 @@ mod tests {
         assert_eq!(inv.len(), 1);
         // Rsync uses session name in remote path
         match &inv[0] {
-            Invocation::Rsync { args } => {
+            Invocation::Rsync { args, .. } => {
                 let last = args.last().unwrap();
                 assert!(last.contains("my-project"));
             }

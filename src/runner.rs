@@ -10,7 +10,10 @@ use std::process::{Command, ExitStatus, Stdio};
 
 use shell_quote::{Bash, QuoteRefExt};
 
-use crate::error::Result;
+use std::path::Path;
+
+use crate::error::{Error, Result};
+use crate::rsync::{Direction, RsyncParams};
 
 /// Output captured from a non-interactive command.
 #[derive(Debug)]
@@ -30,7 +33,7 @@ pub struct CommandOutput {
 pub trait CommandRunner {
     fn run_ssh(&self, remote: &str, command: &str) -> Result<CommandOutput>;
     fn run_ssh_interactive(&self, remote: &str, command: &str) -> Result<ExitStatus>;
-    fn run_rsync(&self, args: &[String]) -> Result<CommandOutput>;
+    fn run_rsync(&self, params: &RsyncParams) -> Result<CommandOutput>;
     fn run_local(&self, program: &str, args: &[&str]) -> Result<CommandOutput>;
 }
 
@@ -45,6 +48,34 @@ pub struct ProcessRunner;
 fn login_shell_wrap(command: &str) -> String {
     let quoted: String = command.quoted(Bash);
     format!("bash -lc {quoted}")
+}
+
+/// Validates that the local pull target is a relocal repo root.
+///
+/// Canonicalizes the path and checks for `relocal.toml` — the same marker
+/// [`find_repo_root`](crate::discovery::find_repo_root) uses. This prevents
+/// `rsync --delete` from wiping an unintended directory if a bug in
+/// higher-level code passes the wrong `repo_root`.
+fn validate_local_pull_target(local_path: &Path) -> Result<()> {
+    let canonical = local_path
+        .canonicalize()
+        .map_err(|e| Error::CommandFailed {
+            command: "rsync".to_string(),
+            message: format!(
+                "refusing to pull: local path {} cannot be resolved: {e}",
+                local_path.display()
+            ),
+        })?;
+    if !canonical.join("relocal.toml").is_file() {
+        return Err(Error::CommandFailed {
+            command: "rsync".to_string(),
+            message: format!(
+                "refusing to pull: {} does not contain relocal.toml",
+                canonical.display()
+            ),
+        });
+    }
+    Ok(())
 }
 
 impl CommandRunner for ProcessRunner {
@@ -69,8 +100,11 @@ impl CommandRunner for ProcessRunner {
         Ok(status)
     }
 
-    fn run_rsync(&self, args: &[String]) -> Result<CommandOutput> {
-        let output = Command::new("rsync").args(args).output()?;
+    fn run_rsync(&self, params: &RsyncParams) -> Result<CommandOutput> {
+        if params.direction() == Direction::Pull {
+            validate_local_pull_target(params.local_path())?;
+        }
+        let output = Command::new("rsync").args(params.args()).output()?;
         Ok(CommandOutput {
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
@@ -91,6 +125,62 @@ impl CommandRunner for ProcessRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    fn make_params(direction: Direction, local_path: PathBuf) -> RsyncParams {
+        RsyncParams::for_test(vec!["--help".to_string()], direction, local_path)
+    }
+
+    #[test]
+    fn pull_refused_without_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = validate_local_pull_target(dir.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("relocal.toml"));
+    }
+
+    #[test]
+    fn pull_allowed_with_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("relocal.toml"), "remote = \"u@h\"").unwrap();
+        let result = validate_local_pull_target(dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn push_skips_validation() {
+        let runner = ProcessRunner;
+        // Use a nonexistent path — push should not validate it.
+        // A pull with this path would fail validation, but push must not.
+        let params = make_params(Direction::Push, PathBuf::from("/nonexistent/path"));
+        let result = runner.run_rsync(&params);
+        if let Err(e) = result {
+            let msg = e.to_string();
+            assert!(
+                !msg.contains("relocal.toml"),
+                "push should not validate local path"
+            );
+        }
+    }
+
+    #[test]
+    fn run_rsync_pull_rejects_invalid_destination() {
+        let runner = ProcessRunner;
+        let dir = tempfile::tempdir().unwrap();
+        // No relocal.toml — ProcessRunner::run_rsync must refuse before invoking rsync.
+        let params = make_params(Direction::Pull, dir.path().to_path_buf());
+        let err = runner.run_rsync(&params).unwrap_err().to_string();
+        assert!(err.contains("relocal.toml"));
+    }
+
+    #[test]
+    fn pull_refused_nonexistent_path() {
+        let result = validate_local_pull_target(&PathBuf::from("/nonexistent/path/xyz"));
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("cannot be resolved"));
+    }
 
     #[test]
     fn run_local_captures_stdout() {
