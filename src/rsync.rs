@@ -69,14 +69,18 @@ pub fn build_rsync_args(
     repo_root: &Path,
     verbose: bool,
 ) -> RsyncParams {
-    let mut args = Vec::new();
-
-    // Base flags
-    args.push("-az".to_string());
-    args.push("--delete".to_string());
-
-    // Respect .gitignore at every directory level
-    args.push("--filter=:- .gitignore".to_string());
+    let mut args = vec![
+        // Base flags
+        "-az".to_string(),
+        "--delete".to_string(),
+        // relocal.toml is intentionally local-only: never transfer it and never
+        // let --delete remove it on the destination. See the integration test
+        // `pull_keeps_gitignored_relocal_toml_across_repeated_pulls` for context.
+        "--exclude=/relocal.toml".to_string(),
+        "--filter=P /relocal.toml".to_string(),
+        // Respect .gitignore at every directory level
+        "--filter=:- .gitignore".to_string(),
+    ];
 
     // User-configured exclusions
     for pattern in &config.exclude {
@@ -139,6 +143,17 @@ mod tests {
         assert!(params
             .args()
             .contains(&"--filter=:- .gitignore".to_string()));
+    }
+
+    #[test]
+    fn relocal_toml_is_excluded_and_protected() {
+        let params = build_rsync_args(&minimal_config(), Direction::Push, "s1", &root(), false);
+        assert!(params
+            .args()
+            .contains(&"--exclude=/relocal.toml".to_string()));
+        assert!(params
+            .args()
+            .contains(&"--filter=P /relocal.toml".to_string()));
     }
 
     #[test]
