@@ -335,6 +335,66 @@ fn pull_deletes_propagate() {
 
 #[test]
 #[ignore = "requires RELOCAL_TEST_REMOTE"]
+fn pull_keeps_gitignored_relocal_toml_across_repeated_pulls() {
+    // Regression test for a POLA-violating interaction between rsync delete
+    // semantics and per-directory .gitignore filters:
+    //
+    // - relocal uses rsync --delete so pull mirrors remote -> local.
+    // - relocal also uses --filter=:- .gitignore so ignored files are omitted
+    //   from the sender's file list.
+    // - Many users put relocal.toml in .gitignore (the README quick-start
+    //   explicitly suggests that), so pushes do not copy relocal.toml to
+    //   the remote session directory.
+    //
+    // With the old rsync args, this caused an unexpected sequence:
+    //
+    // 1) relocal.toml exists locally.
+    // 2) push succeeds (relocal.toml is ignored, so absent on remote).
+    // 3) first pull succeeds, but --delete sees local relocal.toml as
+    //    destination-only and removes it.
+    // 4) second pull fails before rsync because relocal.toml is gone and
+    //    relocal no longer recognizes the current directory as a repo root.
+    //
+    // Fix: build_rsync_args now always adds:
+    // - --exclude=/relocal.toml        (never transfer config file)
+    // - --filter=P /relocal.toml       (protect destination copy from delete)
+    //
+    // This test mirrors the real-world report's "push -> pull -> pull" flow and
+    // asserts relocal.toml remains present after each pull.
+    let remote = test_remote().unwrap();
+    let session = unique_session("pull-keep-relocal-toml");
+    let (dir, config) = make_local_repo(&remote);
+    let _cleanup = RemoteCleanup {
+        remote: remote.clone(),
+        session: session.clone(),
+    };
+    let runner = ProcessRunner;
+    ensure_remote_session_dir(&remote, &session);
+
+    std::fs::write(dir.path().join(".gitignore"), "relocal.toml\n").unwrap();
+    assert!(dir.path().join("relocal.toml").exists());
+
+    sync::sync_push(&runner, &config, &session, dir.path(), false).unwrap();
+    assert!(!remote_file_exists(
+        &remote,
+        &format!("{}/relocal.toml", remote_dir(&session))
+    ));
+
+    sync::sync_pull(&runner, &config, &session, dir.path(), false).unwrap();
+    assert!(
+        dir.path().join("relocal.toml").exists(),
+        "first pull must not delete local relocal.toml"
+    );
+
+    sync::sync_pull(&runner, &config, &session, dir.path(), false).unwrap();
+    assert!(
+        dir.path().join("relocal.toml").exists(),
+        "second pull must also preserve local relocal.toml"
+    );
+}
+
+#[test]
+#[ignore = "requires RELOCAL_TEST_REMOTE"]
 fn pull_excludes_claude_dir() {
     let remote = test_remote().unwrap();
     let session = unique_session("pull-no-claude");
