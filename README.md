@@ -106,6 +106,7 @@ cargo install --path .
 cd ~/my-project
 relocal init
 # Follow the prompts and set remote to user@host
+grep -qxF 'relocal.toml' .gitignore 2>/dev/null || echo 'relocal.toml' >> .gitignore
 
 # Install dependencies on the remote (Rust, Node, Claude Code, etc.)
 relocal remote install
