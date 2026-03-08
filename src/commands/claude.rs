@@ -24,13 +24,13 @@ pub fn run(
     verbose: bool,
     claude_args: &[String],
 ) -> Result<()> {
-    let runner = ProcessRunner;
+    let runner = ProcessRunner::default();
 
     // Pre-sidecar setup
     setup(&runner, config, session_name, repo_root, verbose)?;
 
     // Start sidecar
-    let sidecar_runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(ProcessRunner);
+    let sidecar_runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(ProcessRunner::default());
     let mut sidecar = Sidecar::start(
         sidecar_runner,
         config.clone(),

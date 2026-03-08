@@ -6,11 +6,11 @@
 //! that records invocations and returns canned results, without needing
 //! real SSH or rsync.
 
+use std::ffi::OsString;
+use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
 
 use shell_quote::{Bash, QuoteRefExt};
-
-use std::path::Path;
 
 use crate::error::{Error, Result};
 use crate::rsync::{Direction, RsyncParams};
@@ -38,7 +38,36 @@ pub trait CommandRunner {
 }
 
 /// Production implementation that shells out via `std::process::Command`.
-pub struct ProcessRunner;
+///
+/// Tests can override the SSH client path to force transport-level behavior
+/// through the real process-spawning path without mutating global environment.
+pub struct ProcessRunner {
+    ssh: OsString,
+}
+
+impl ProcessRunner {
+    /// Creates a runner that uses the system `ssh` binary.
+    pub fn new() -> Self {
+        Self {
+            ssh: OsString::from("ssh"),
+        }
+    }
+
+    /// Creates a runner that shells out through the given SSH client program.
+    ///
+    /// This keeps the injection point local to the runner instance, which makes
+    /// transport-failure tests deterministic without leaking configuration into
+    /// unrelated code running in the same process.
+    pub fn with_ssh_program(ssh: impl Into<OsString>) -> Self {
+        Self { ssh: ssh.into() }
+    }
+}
+
+impl Default for ProcessRunner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Wraps a command in `bash -lc <quoted-command>` so it runs as a login shell.
 ///
@@ -81,7 +110,7 @@ fn validate_local_pull_target(local_path: &Path) -> Result<()> {
 impl CommandRunner for ProcessRunner {
     fn run_ssh(&self, remote: &str, command: &str) -> Result<CommandOutput> {
         let wrapped = login_shell_wrap(command);
-        let output = Command::new("ssh").args([remote, &wrapped]).output()?;
+        let output = Command::new(&self.ssh).args([remote, &wrapped]).output()?;
         Ok(CommandOutput {
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
@@ -91,7 +120,7 @@ impl CommandRunner for ProcessRunner {
 
     fn run_ssh_interactive(&self, remote: &str, command: &str) -> Result<ExitStatus> {
         let wrapped = login_shell_wrap(command);
-        let status = Command::new("ssh")
+        let status = Command::new(&self.ssh)
             .args(["-t", remote, &wrapped])
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
@@ -125,6 +154,7 @@ impl CommandRunner for ProcessRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
 
     fn make_params(direction: Direction, local_path: PathBuf) -> RsyncParams {
@@ -150,7 +180,7 @@ mod tests {
 
     #[test]
     fn push_skips_validation() {
-        let runner = ProcessRunner;
+        let runner = ProcessRunner::default();
         // Use a nonexistent path — push should not validate it.
         // A pull with this path would fail validation, but push must not.
         let params = make_params(Direction::Push, PathBuf::from("/nonexistent/path"));
@@ -166,7 +196,7 @@ mod tests {
 
     #[test]
     fn run_rsync_pull_rejects_invalid_destination() {
-        let runner = ProcessRunner;
+        let runner = ProcessRunner::default();
         let dir = tempfile::tempdir().unwrap();
         // No relocal.toml — ProcessRunner::run_rsync must refuse before invoking rsync.
         let params = make_params(Direction::Pull, dir.path().to_path_buf());
@@ -184,7 +214,7 @@ mod tests {
 
     #[test]
     fn run_local_captures_stdout() {
-        let runner = ProcessRunner;
+        let runner = ProcessRunner::default();
         let out = runner.run_local("echo", &["hello world"]).unwrap();
         assert_eq!(out.stdout.trim(), "hello world");
         assert!(out.status.success());
@@ -192,21 +222,21 @@ mod tests {
 
     #[test]
     fn run_local_captures_stderr() {
-        let runner = ProcessRunner;
+        let runner = ProcessRunner::default();
         let out = runner.run_local("sh", &["-c", "echo oops >&2"]).unwrap();
         assert_eq!(out.stderr.trim(), "oops");
     }
 
     #[test]
     fn run_local_failing_command() {
-        let runner = ProcessRunner;
+        let runner = ProcessRunner::default();
         let out = runner.run_local("false", &[]).unwrap();
         assert!(!out.status.success());
     }
 
     #[test]
     fn run_local_nonexistent_program() {
-        let runner = ProcessRunner;
+        let runner = ProcessRunner::default();
         let result = runner.run_local("this-program-does-not-exist-xyz", &[]);
         assert!(result.is_err());
     }
@@ -231,5 +261,24 @@ mod tests {
         let cmd = "cat > /tmp/test << 'EOF'\n{\"key\": \"value\"}\nEOF";
         let wrapped = login_shell_wrap(cmd);
         assert!(wrapped.starts_with("bash -lc "));
+    }
+
+    #[test]
+    fn injected_ssh_program_is_used() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("fake-ssh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\necho 'ssh: injected failure from runner test' >&2\nexit 255\n",
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).unwrap();
+
+        let runner = ProcessRunner::with_ssh_program(&script);
+        let out = runner.run_ssh("user@host", "echo hi").unwrap();
+        assert!(!out.status.success());
+        assert!(out.stderr.contains("injected failure from runner test"));
     }
 }

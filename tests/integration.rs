@@ -64,6 +64,11 @@ fn make_local_repo_with_excludes(remote: &str, excludes: &[&str]) -> (tempfile::
     (dir, config)
 }
 
+/// Returns the path to the compiled `relocal` binary for integration tests.
+fn relocal_bin() -> &'static str {
+    env!("CARGO_BIN_EXE_relocal")
+}
+
 /// RAII guard that cleans up remote state on drop (even on panic).
 struct RemoteCleanup {
     remote: String,
@@ -72,7 +77,7 @@ struct RemoteCleanup {
 
 impl Drop for RemoteCleanup {
     fn drop(&mut self) {
-        let runner = ProcessRunner;
+        let runner = ProcessRunner::default();
         // Best-effort cleanup
         let _ = runner.run_ssh(&self.remote, &ssh::rm_work_dir(&self.session));
         let _ = runner.run_ssh(&self.remote, &ssh::remove_fifos(&self.session));
@@ -81,7 +86,7 @@ impl Drop for RemoteCleanup {
 
 /// Reads a file from the remote via SSH.
 fn read_remote_file(remote: &str, path: &str) -> Option<String> {
-    let runner = ProcessRunner;
+    let runner = ProcessRunner::default();
     let out = runner.run_ssh(remote, &format!("cat {path}")).ok()?;
     if out.status.success() {
         Some(out.stdout)
@@ -92,14 +97,14 @@ fn read_remote_file(remote: &str, path: &str) -> Option<String> {
 
 /// Writes a file on the remote via SSH.
 fn write_remote_file(remote: &str, path: &str, content: &str) {
-    let runner = ProcessRunner;
+    let runner = ProcessRunner::default();
     let cmd = format!("mkdir -p $(dirname {path}) && printf '%s' '{content}' > {path}");
     runner.run_ssh(remote, &cmd).expect("write remote file");
 }
 
 /// Checks if a remote file exists.
 fn remote_file_exists(remote: &str, path: &str) -> bool {
-    let runner = ProcessRunner;
+    let runner = ProcessRunner::default();
     runner
         .run_ssh(remote, &format!("test -e {path}"))
         .map(|o| o.status.success())
@@ -114,7 +119,7 @@ fn remote_dir(session: &str) -> String {
 /// Ensures the remote session directory exists (for tests that call sync directly
 /// without going through `claude::setup`).
 fn ensure_remote_session_dir(remote: &str, session: &str) {
-    let runner = ProcessRunner;
+    let runner = ProcessRunner::default();
     runner
         .run_ssh(remote, &ssh::mkdir_work_dir(session))
         .expect("create remote session dir");
@@ -134,7 +139,7 @@ fn push_files_appear_on_remote() {
         remote: remote.clone(),
         session: session.clone(),
     };
-    let runner = ProcessRunner;
+    let runner = ProcessRunner::default();
     ensure_remote_session_dir(&remote, &session);
 
     // Create a local file
@@ -156,7 +161,7 @@ fn push_deletes_propagate() {
         remote: remote.clone(),
         session: session.clone(),
     };
-    let runner = ProcessRunner;
+    let runner = ProcessRunner::default();
     ensure_remote_session_dir(&remote, &session);
 
     // Push a file
@@ -186,7 +191,7 @@ fn push_respects_gitignore() {
         remote: remote.clone(),
         session: session.clone(),
     };
-    let runner = ProcessRunner;
+    let runner = ProcessRunner::default();
     ensure_remote_session_dir(&remote, &session);
 
     std::fs::write(dir.path().join(".gitignore"), "*.log\n").unwrap();
@@ -215,7 +220,7 @@ fn push_respects_config_excludes() {
         remote: remote.clone(),
         session: session.clone(),
     };
-    let runner = ProcessRunner;
+    let runner = ProcessRunner::default();
     ensure_remote_session_dir(&remote, &session);
 
     std::fs::write(dir.path().join(".env"), "SECRET=x").unwrap();
@@ -249,7 +254,7 @@ fn push_excludes_claude_dir() {
         remote: remote.clone(),
         session: session.clone(),
     };
-    let runner = ProcessRunner;
+    let runner = ProcessRunner::default();
     ensure_remote_session_dir(&remote, &session);
 
     // Create .claude/ content locally
@@ -285,7 +290,7 @@ fn pull_files_appear_locally() {
         remote: remote.clone(),
         session: session.clone(),
     };
-    let runner = ProcessRunner;
+    let runner = ProcessRunner::default();
     ensure_remote_session_dir(&remote, &session);
 
     // Push first to create remote dir
@@ -314,7 +319,7 @@ fn pull_deletes_propagate() {
         remote: remote.clone(),
         session: session.clone(),
     };
-    let runner = ProcessRunner;
+    let runner = ProcessRunner::default();
     ensure_remote_session_dir(&remote, &session);
 
     // Push two files
@@ -368,7 +373,7 @@ fn pull_keeps_gitignored_relocal_toml_across_repeated_pulls() {
         remote: remote.clone(),
         session: session.clone(),
     };
-    let runner = ProcessRunner;
+    let runner = ProcessRunner::default();
     ensure_remote_session_dir(&remote, &session);
 
     std::fs::write(dir.path().join(".gitignore"), "relocal.toml\n").unwrap();
@@ -403,7 +408,7 @@ fn pull_excludes_claude_dir() {
         remote: remote.clone(),
         session: session.clone(),
     };
-    let runner = ProcessRunner;
+    let runner = ProcessRunner::default();
     ensure_remote_session_dir(&remote, &session);
 
     // Push to create remote dir
@@ -436,7 +441,7 @@ fn setup_installs_hooks_with_correct_session_name() {
         remote: remote.clone(),
         session: session.clone(),
     };
-    let runner = ProcessRunner;
+    let runner = ProcessRunner::default();
 
     claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
     claude::cleanup(&runner, &config, &session).unwrap();
@@ -466,7 +471,7 @@ fn fifos_created_by_setup() {
         remote: remote.clone(),
         session: session.clone(),
     };
-    let runner = ProcessRunner;
+    let runner = ProcessRunner::default();
 
     claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
 
@@ -487,7 +492,7 @@ fn fifos_removed_by_cleanup() {
         remote: remote.clone(),
         session: session.clone(),
     };
-    let runner = ProcessRunner;
+    let runner = ProcessRunner::default();
 
     claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
     claude::cleanup(&runner, &config, &session).unwrap();
@@ -509,7 +514,7 @@ fn stale_fifos_prevent_setup() {
         remote: remote.clone(),
         session: session.clone(),
     };
-    let runner = ProcessRunner;
+    let runner = ProcessRunner::default();
 
     // Pre-create FIFOs
     runner.run_ssh(&remote, &ssh::mkdir_fifos_dir()).unwrap();
@@ -538,14 +543,14 @@ fn sidecar_push_request_syncs_and_acks() {
         remote: remote.clone(),
         session: session.clone(),
     };
-    let runner = ProcessRunner;
+    let runner = ProcessRunner::default();
 
     // Setup creates remote dir + FIFOs + initial push
     claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
 
     // Start sidecar
     let sidecar_runner: std::sync::Arc<dyn CommandRunner + Send + Sync> =
-        std::sync::Arc::new(ProcessRunner);
+        std::sync::Arc::new(ProcessRunner::default());
     let mut sidecar = relocal::sidecar::Sidecar::start(
         sidecar_runner,
         config.clone(),
@@ -592,12 +597,12 @@ fn sidecar_pull_request_syncs_and_acks() {
         remote: remote.clone(),
         session: session.clone(),
     };
-    let runner = ProcessRunner;
+    let runner = ProcessRunner::default();
 
     claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
 
     let sidecar_runner: std::sync::Arc<dyn CommandRunner + Send + Sync> =
-        std::sync::Arc::new(ProcessRunner);
+        std::sync::Arc::new(ProcessRunner::default());
     let mut sidecar = relocal::sidecar::Sidecar::start(
         sidecar_runner,
         config.clone(),
@@ -646,12 +651,12 @@ fn sidecar_clean_shutdown() {
         remote: remote.clone(),
         session: session.clone(),
     };
-    let runner = ProcessRunner;
+    let runner = ProcessRunner::default();
 
     claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
 
     let sidecar_runner: std::sync::Arc<dyn CommandRunner + Send + Sync> =
-        std::sync::Arc::new(ProcessRunner);
+        std::sync::Arc::new(ProcessRunner::default());
     let mut sidecar = relocal::sidecar::Sidecar::start(
         sidecar_runner,
         config.clone(),
@@ -678,7 +683,7 @@ fn hook_script_ok_ack_exits_zero() {
         remote: remote.clone(),
         session: session.clone(),
     };
-    let runner = ProcessRunner;
+    let runner = ProcessRunner::default();
 
     // Create FIFOs and install hook script
     runner.run_ssh(&remote, &ssh::mkdir_fifos_dir()).unwrap();
@@ -700,7 +705,7 @@ fn hook_script_ok_ack_exits_zero() {
     let bg_remote = remote.clone();
     let bg_session = session.clone();
     let sidecar_thread = std::thread::spawn(move || {
-        let r = ProcessRunner;
+        let r = ProcessRunner::default();
         let cmd = format!(
             "cat {} > /dev/null && echo ok > {}",
             ssh::fifo_request_path(&bg_session),
@@ -728,7 +733,7 @@ fn hook_script_error_ack_exits_nonzero() {
         remote: remote.clone(),
         session: session.clone(),
     };
-    let runner = ProcessRunner;
+    let runner = ProcessRunner::default();
 
     runner.run_ssh(&remote, &ssh::mkdir_fifos_dir()).unwrap();
     runner.run_ssh(&remote, &ssh::mkdir_bin_dir()).unwrap();
@@ -749,7 +754,7 @@ fn hook_script_error_ack_exits_nonzero() {
     let bg_remote = remote.clone();
     let bg_session = session.clone();
     let sidecar_thread = std::thread::spawn(move || {
-        let r = ProcessRunner;
+        let r = ProcessRunner::default();
         let cmd = format!(
             "cat {} > /dev/null && echo 'error:sync failed' > {}",
             ssh::fifo_request_path(&bg_session),
@@ -783,7 +788,7 @@ fn setup_creates_dir_fifos_pushes_hooks() {
         remote: remote.clone(),
         session: session.clone(),
     };
-    let runner = ProcessRunner;
+    let runner = ProcessRunner::default();
 
     std::fs::write(dir.path().join("data.txt"), "hello").unwrap();
 
@@ -817,7 +822,7 @@ fn destroy_removes_dir_and_fifos() {
     let session = unique_session("lifecycle-destroy");
     let (dir, config) = make_local_repo(&remote);
     // No RemoteCleanup needed — destroy does the cleanup
-    let runner = ProcessRunner;
+    let runner = ProcessRunner::default();
 
     // Setup first
     claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
@@ -844,7 +849,7 @@ fn destroy_removes_dir_and_fifos() {
 #[ignore = "requires RELOCAL_TEST_REMOTE"]
 fn install_creates_hook_script_and_fifos_dir() {
     let remote = test_remote().unwrap();
-    let runner = ProcessRunner;
+    let runner = ProcessRunner::default();
 
     // Run install (only hook script + fifos dir steps)
     // We test the hook script and fifos dir steps specifically
@@ -886,7 +891,7 @@ fn list_shows_sessions_and_excludes_dot_dirs() {
         remote: remote.clone(),
         session: session2.clone(),
     };
-    let runner = ProcessRunner;
+    let runner = ProcessRunner::default();
 
     // Create sessions
     runner
@@ -925,7 +930,7 @@ fn status_reports_correct_info() {
         remote: remote.clone(),
         session: session.clone(),
     };
-    let runner = ProcessRunner;
+    let runner = ProcessRunner::default();
 
     // Before setup: dir should not exist
     let check = runner
@@ -949,11 +954,52 @@ fn status_reports_correct_info() {
 
 #[test]
 #[ignore = "requires RELOCAL_TEST_REMOTE"]
+fn status_command_reports_missing_then_existing_directory() {
+    let remote = test_remote().unwrap();
+    let session = unique_session("status-probe");
+    let (dir, _config) = make_local_repo(&remote);
+    let _cleanup = RemoteCleanup {
+        remote: remote.clone(),
+        session: session.clone(),
+    };
+
+    let missing_output = std::process::Command::new(relocal_bin())
+        .args(["status", &session])
+        .current_dir(dir.path())
+        .output()
+        .expect("run relocal status before remote dir exists");
+    assert!(
+        missing_output.status.success(),
+        "status before mkdir should succeed: stderr={}",
+        String::from_utf8_lossy(&missing_output.stderr)
+    );
+    let missing_stderr = String::from_utf8_lossy(&missing_output.stderr);
+    assert!(missing_stderr.contains(&format!("Session:    {session}")));
+    assert!(missing_stderr.contains("Directory:  not found"));
+
+    ensure_remote_session_dir(&remote, &session);
+
+    let existing_output = std::process::Command::new(relocal_bin())
+        .args(["status", &session])
+        .current_dir(dir.path())
+        .output()
+        .expect("run relocal status after remote dir exists");
+    assert!(
+        existing_output.status.success(),
+        "status after mkdir should succeed: stderr={}",
+        String::from_utf8_lossy(&existing_output.stderr)
+    );
+    let existing_stderr = String::from_utf8_lossy(&existing_output.stderr);
+    assert!(existing_stderr.contains("Directory:  exists"));
+}
+
+#[test]
+#[ignore = "requires RELOCAL_TEST_REMOTE"]
 fn nuke_removes_everything() {
     let remote = test_remote().unwrap();
     let session = unique_session("nuke-test");
     let config = Config::parse(&format!("remote = \"{remote}\"")).unwrap();
-    let runner = ProcessRunner;
+    let runner = ProcessRunner::default();
 
     // Create some state
     runner
@@ -982,7 +1028,7 @@ fn localhost_push_pull_roundtrip() {
         remote: remote.clone(),
         session: session.clone(),
     };
-    let runner = ProcessRunner;
+    let runner = ProcessRunner::default();
 
     // Create local files
     std::fs::write(dir.path().join("local.txt"), "local content").unwrap();
