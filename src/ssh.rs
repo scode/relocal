@@ -1,13 +1,20 @@
-//! Helper functions that construct remote shell command strings.
+//! Shared SSH helpers for relocal.
 //!
-//! These are pure string-building functions — they don't execute anything.
-//! Orchestration code passes the returned strings to [`CommandRunner::run_ssh`]
-//! or [`CommandRunner::run_ssh_interactive`].
+//! This module owns both the shell snippets used for remote operations and the
+//! shared probe execution helper used by higher-level commands such as
+//! `relocal status`. It is intentionally not "strings only": remote probe
+//! semantics live here so callers do not each reimplement the same
+//! exit-code-to-meaning translation.
 
 use shell_quote::{Bash, QuoteRefExt};
 
+use crate::error::{Error, Result};
+use crate::runner::CommandRunner;
+
 /// Remote base directory for all relocal state.
 const RELOCAL_DIR: &str = "~/relocal";
+pub const STATUS_CHECK_TRUE: &str = "__RELOCAL_STATUS_TRUE__";
+pub const STATUS_CHECK_FALSE: &str = "__RELOCAL_STATUS_FALSE__";
 
 /// Returns the remote working directory path for a session.
 pub fn remote_work_dir(session: &str) -> String {
@@ -131,6 +138,53 @@ pub fn check_work_dir_exists(session: &str) -> String {
     format!("test -d {}", remote_work_dir(session))
 }
 
+/// Wraps a shell probe so exit code `1` can be reported without looking like SSH failure.
+///
+/// Many status-style probes use shell exit code `1` to mean "absent" rather than
+/// "broken". This wrapper turns `0` and `1` into explicit stdout markers while
+/// preserving any other exit code as a real command failure.
+fn wrap_status_check(command: &str) -> String {
+    format!(
+        "{{ {command}; }} >/dev/null 2>&1; status=$?; case \"$status\" in 0) printf '{STATUS_CHECK_TRUE}' ;; 1) printf '{STATUS_CHECK_FALSE}' ;; *) exit \"$status\" ;; esac"
+    )
+}
+
+/// Runs a wrapped SSH probe and returns whether the remote check succeeded.
+///
+/// Many remote shell probes use exit code `1` to mean "absent" rather than
+/// "broken". This helper preserves that distinction by translating `0` and `1`
+/// into explicit markers and surfacing transport or shell-level failures as
+/// [`Error::Remote`].
+pub fn run_status_check(runner: &dyn CommandRunner, remote: &str, command: &str) -> Result<bool> {
+    let output = runner.run_ssh(remote, &wrap_status_check(command))?;
+
+    if !output.status.success() {
+        let code = output.status.code().map_or_else(
+            || "terminated by signal".to_string(),
+            |code| format!("exit code {code}"),
+        );
+        let stderr = output.stderr.trim();
+        let message = if stderr.is_empty() {
+            format!("status probe failed with {code}")
+        } else {
+            format!("status probe failed with {code}: {stderr}")
+        };
+        return Err(Error::Remote {
+            remote: remote.to_string(),
+            message,
+        });
+    }
+
+    match output.stdout.trim() {
+        STATUS_CHECK_TRUE => Ok(true),
+        STATUS_CHECK_FALSE => Ok(false),
+        other => Err(Error::Remote {
+            remote: remote.to_string(),
+            message: format!("status probe returned unexpected output: {other:?}"),
+        }),
+    }
+}
+
 /// Command to verify the remote session directory is a valid git repository.
 ///
 /// Runs `git fsck --strict --full --no-dangling` in the session's working
@@ -169,6 +223,21 @@ pub fn start_claude_session(session: &str, extra_args: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    use crate::runner::ProcessRunner;
+    use crate::test_support::{Invocation, MockResponse, MockRunner};
+
+    fn write_executable_script(name: &str, body: &str) -> std::path::PathBuf {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(name);
+        std::fs::write(&path, body).unwrap();
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        std::mem::forget(dir);
+        path
+    }
 
     #[test]
     fn remote_work_dir_format() {
@@ -305,5 +374,71 @@ mod tests {
     #[test]
     fn check_claude_installed_format() {
         assert_eq!(check_claude_installed(), "command -v claude");
+    }
+
+    #[test]
+    fn run_status_check_wraps_commands_and_reports_true() {
+        let mock = MockRunner::new();
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_TRUE.into()));
+
+        let result = run_status_check(&mock, "user@host", "test -d ~/relocal/s1").unwrap();
+        assert!(result);
+
+        let invocations = mock.invocations();
+        assert_eq!(invocations.len(), 1);
+        match &invocations[0] {
+            Invocation::Ssh { remote, command } => {
+                assert_eq!(remote, "user@host");
+                assert!(command.contains("test -d ~/relocal/s1"));
+                assert!(command.contains(STATUS_CHECK_TRUE));
+                assert!(command.contains(STATUS_CHECK_FALSE));
+            }
+            _ => panic!("expected Ssh"),
+        }
+    }
+
+    #[test]
+    fn run_status_check_reports_false() {
+        let mock = MockRunner::new();
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_FALSE.into()));
+
+        let result = run_status_check(&mock, "user@host", "test -d ~/relocal/s1").unwrap();
+        assert!(!result);
+    }
+
+    #[test]
+    fn run_status_check_surfaces_transport_failures() {
+        let mock = MockRunner::new();
+        mock.add_response(MockResponse::Fail("ssh: connect timeout".into()));
+
+        let err = run_status_check(&mock, "user@host", "test -d ~/relocal/s1").unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("remote error"));
+        assert!(message.contains("status probe failed"));
+        assert!(message.contains("timeout"));
+    }
+
+    #[test]
+    fn run_status_check_rejects_unexpected_output() {
+        let mock = MockRunner::new();
+        mock.add_response(MockResponse::Ok("maybe".into()));
+
+        let err = run_status_check(&mock, "user@host", "test -d ~/relocal/s1").unwrap_err();
+        assert!(err.to_string().contains("unexpected output"));
+    }
+
+    #[test]
+    fn run_status_check_surfaces_injected_process_runner_failures() {
+        let fake_ssh = write_executable_script(
+            "fake-ssh.sh",
+            "#!/bin/sh\necho 'ssh: injected failure from ssh helper test' >&2\nexit 255\n",
+        );
+        let runner = ProcessRunner::with_ssh_program(&fake_ssh);
+
+        let err = run_status_check(&runner, "user@host", "test -d ~/relocal/s1").unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("remote error"));
+        assert!(message.contains("status probe failed"));
+        assert!(message.contains("ssh helper test"));
     }
 }

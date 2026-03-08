@@ -61,7 +61,7 @@ fn main() {
         Command::Remote { command } => match command {
             RemoteCommand::Install => {
                 let (_root, cfg) = load_config();
-                let runner = runner::ProcessRunner;
+                let runner = runner::ProcessRunner::default();
                 if let Err(e) = commands::install::run(&runner, &cfg) {
                     eprintln!("Error: {e}");
                     std::process::exit(1);
@@ -69,7 +69,7 @@ fn main() {
             }
             RemoteCommand::Nuke => {
                 let (_root, cfg) = load_config();
-                let runner = runner::ProcessRunner;
+                let runner = runner::ProcessRunner::default();
                 if let Err(e) = commands::nuke::run(&runner, &cfg, true) {
                     eprintln!("Error: {e}");
                     std::process::exit(1);
@@ -89,7 +89,7 @@ fn main() {
         }
         Command::Sync { command } => {
             let (root, cfg) = load_config();
-            let runner = runner::ProcessRunner;
+            let runner = runner::ProcessRunner::default();
             match command {
                 SyncCommand::Push { session_name } => {
                     let session = resolve_session(session_name, &root);
@@ -113,7 +113,7 @@ fn main() {
         }
         Command::Status { session_name } => {
             let (root, cfg) = load_config();
-            let runner = runner::ProcessRunner;
+            let runner = runner::ProcessRunner::default();
             let session = resolve_session(session_name, &root);
             if let Err(e) = commands::status::run(&runner, &cfg, &session) {
                 eprintln!("Error: {e}");
@@ -122,7 +122,7 @@ fn main() {
         }
         Command::List => {
             let (_root, cfg) = load_config();
-            let runner = runner::ProcessRunner;
+            let runner = runner::ProcessRunner::default();
             if let Err(e) = commands::list::run(&runner, &cfg) {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
@@ -130,7 +130,7 @@ fn main() {
         }
         Command::Destroy { session_name } => {
             let (root, cfg) = load_config();
-            let runner = runner::ProcessRunner;
+            let runner = runner::ProcessRunner::default();
             let session = resolve_session(session_name, &root);
             if let Err(e) = commands::destroy::run(&runner, &cfg, &session, true) {
                 eprintln!("Error: {e}");

@@ -15,19 +15,18 @@ pub fn run(runner: &dyn CommandRunner, config: &Config, session_name: &str) -> R
     eprintln!("Remote:     {}", config.remote);
     eprintln!("Remote dir: {}", ssh::remote_work_dir(session_name));
 
-    let dir_exists = runner
-        .run_ssh(&config.remote, &ssh::check_work_dir_exists(session_name))?
-        .status
-        .success();
+    let dir_exists = ssh::run_status_check(
+        runner,
+        &config.remote,
+        &ssh::check_work_dir_exists(session_name),
+    )?;
     eprintln!(
         "Directory:  {}",
         if dir_exists { "exists" } else { "not found" }
     );
 
-    let claude_installed = runner
-        .run_ssh(&config.remote, &ssh::check_claude_installed())?
-        .status
-        .success();
+    let claude_installed =
+        ssh::run_status_check(runner, &config.remote, &ssh::check_claude_installed())?;
     eprintln!(
         "Claude:     {}",
         if claude_installed {
@@ -37,10 +36,11 @@ pub fn run(runner: &dyn CommandRunner, config: &Config, session_name: &str) -> R
         }
     );
 
-    let fifos_exist = runner
-        .run_ssh(&config.remote, &ssh::check_fifos_exist(session_name))?
-        .status
-        .success();
+    let fifos_exist = ssh::run_status_check(
+        runner,
+        &config.remote,
+        &ssh::check_fifos_exist(session_name),
+    )?;
     eprintln!(
         "FIFOs:      {}",
         if fifos_exist {
@@ -66,11 +66,11 @@ mod tests {
     fn checks_all_three_conditions() {
         let mock = MockRunner::new();
         // check_work_dir_exists
-        mock.add_response(MockResponse::Ok(String::new()));
+        mock.add_response(MockResponse::Ok(ssh::STATUS_CHECK_TRUE.into()));
         // check_claude_installed
-        mock.add_response(MockResponse::Ok("/usr/local/bin/claude\n".into()));
+        mock.add_response(MockResponse::Ok(ssh::STATUS_CHECK_TRUE.into()));
         // check_fifos_exist
-        mock.add_response(MockResponse::Fail(String::new()));
+        mock.add_response(MockResponse::Ok(ssh::STATUS_CHECK_FALSE.into()));
 
         run(&mock, &test_config(), "my-session").unwrap();
 
@@ -115,9 +115,9 @@ mod tests {
     #[test]
     fn reports_when_everything_exists() {
         let mock = MockRunner::new();
-        mock.add_response(MockResponse::Ok(String::new()));
-        mock.add_response(MockResponse::Ok(String::new()));
-        mock.add_response(MockResponse::Ok(String::new()));
+        mock.add_response(MockResponse::Ok(ssh::STATUS_CHECK_TRUE.into()));
+        mock.add_response(MockResponse::Ok(ssh::STATUS_CHECK_TRUE.into()));
+        mock.add_response(MockResponse::Ok(ssh::STATUS_CHECK_TRUE.into()));
 
         // Should not error even when FIFOs exist
         run(&mock, &test_config(), "s1").unwrap();
@@ -126,9 +126,9 @@ mod tests {
     #[test]
     fn reports_when_nothing_exists() {
         let mock = MockRunner::new();
-        mock.add_response(MockResponse::Fail(String::new()));
-        mock.add_response(MockResponse::Fail(String::new()));
-        mock.add_response(MockResponse::Fail(String::new()));
+        mock.add_response(MockResponse::Ok(ssh::STATUS_CHECK_FALSE.into()));
+        mock.add_response(MockResponse::Ok(ssh::STATUS_CHECK_FALSE.into()));
+        mock.add_response(MockResponse::Ok(ssh::STATUS_CHECK_FALSE.into()));
 
         // Should not error when nothing exists
         run(&mock, &test_config(), "s1").unwrap();
