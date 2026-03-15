@@ -50,6 +50,16 @@ pub enum Command {
         claude_args: Vec<String>,
     },
 
+    /// Sync and launch an interactive Codex session on the remote.
+    Codex {
+        /// Session name (defaults to directory name).
+        session_name: Option<String>,
+
+        /// Extra arguments passed through to `codex` (after `--`).
+        #[arg(last = true)]
+        codex_args: Vec<String>,
+    },
+
     /// Open an interactive SSH shell in the remote session directory.
     Ssh {
         /// Session name (defaults to directory name).
@@ -201,6 +211,66 @@ mod tests {
                 assert_eq!(claude_args, &["--debug", "--resume"]);
             }
             _ => panic!("expected Claude"),
+        }
+    }
+
+    #[test]
+    fn codex_no_session() {
+        let cli = parse(&["relocal", "codex"]);
+        match &cli.command {
+            Command::Codex {
+                session_name,
+                codex_args,
+            } => {
+                assert!(session_name.is_none());
+                assert!(codex_args.is_empty());
+            }
+            _ => panic!("expected Codex"),
+        }
+    }
+
+    #[test]
+    fn codex_with_session() {
+        let cli = parse(&["relocal", "codex", "my-session"]);
+        match &cli.command {
+            Command::Codex {
+                session_name,
+                codex_args,
+            } => {
+                assert_eq!(session_name.as_deref(), Some("my-session"));
+                assert!(codex_args.is_empty());
+            }
+            _ => panic!("expected Codex"),
+        }
+    }
+
+    #[test]
+    fn codex_with_extra_args() {
+        let cli = parse(&["relocal", "codex", "--", "--model", "o3"]);
+        match &cli.command {
+            Command::Codex {
+                session_name,
+                codex_args,
+            } => {
+                assert!(session_name.is_none());
+                assert_eq!(codex_args, &["--model", "o3"]);
+            }
+            _ => panic!("expected Codex"),
+        }
+    }
+
+    #[test]
+    fn codex_with_session_and_extra_args() {
+        let cli = parse(&["relocal", "codex", "my-session", "--", "--model", "o3"]);
+        match &cli.command {
+            Command::Codex {
+                session_name,
+                codex_args,
+            } => {
+                assert_eq!(session_name.as_deref(), Some("my-session"));
+                assert_eq!(codex_args, &["--model", "o3"]);
+            }
+            _ => panic!("expected Codex"),
         }
     }
 

@@ -1,14 +1,14 @@
-# relocal — Run Claude Code Remotely, Work Locally
+# relocal — Run AI Coding Agents Remotely, Work Locally
 
 ## Overview
 
-`relocal` is a CLI tool that lets developers run Claude Code unsandboxed on a remote Linux box while keeping a local
-copy of the repo current. The local repo is pushed to the remote at session start, and a background loop continuously
-pulls Claude's changes back to local while the session runs.
+`relocal` is a CLI tool that lets developers run Claude Code or Codex unsandboxed on a remote Linux box while keeping a
+local copy of the repo current. The local repo is pushed to the remote at session start, and a background loop
+continuously pulls the agent's changes back to local while the session runs.
 
-The user reviews Claude's output locally using authenticated tools (git, Graphite, GitHub CLI, etc.) while Claude Code
-runs on a remote machine without restrictions. Local edits made during an active session are **not** synced to the
-remote — use `relocal sync push` between sessions to send local changes.
+The user reviews output locally using authenticated tools (git, Graphite, GitHub CLI, etc.) while the agent runs on a
+remote machine without restrictions. Local edits made during an active session are **not** synced to the remote — use
+`relocal sync push` between sessions to send local changes.
 
 Distribution and installation of the `relocal` binary itself (e.g., via `cargo install` or binary releases) is out of
 scope of this spec.
@@ -114,6 +114,10 @@ following steps in order:
    the normal login flow (supports both API key and subscription-based auth). Since the SSH session has a terminal
    attached, the interactive login works as normal.
 
+8. **Codex authentication**: Runs `codex login --device-auth` interactively if `~/.codex/auth.json` does not exist. The
+   device code flow prints a URL and one-time code; the user opens the URL in any browser and enters the code to
+   complete authentication. Works over headless SSH sessions.
+
 All steps are idempotent — re-running `relocal remote install` is safe.
 
 ### `relocal claude [session-name]`
@@ -152,13 +156,20 @@ If the SSH session drops unexpectedly (network failure, laptop sleep):
   on the remote, and that they should use `relocal sync pull` or `relocal sync push` as appropriate to avoid data loss.
   The user must decide the correct action since the tool cannot know the state.
 
+### `relocal codex [session-name]`
+
+Identical to `relocal claude` except it launches Codex instead of Claude Code. The remote command is `codex --yolo`
+(instead of `claude --dangerously-skip-permissions`). All other behavior — session management, sync, lock files,
+ControlMaster, background loop, dirty shutdown handling — is the same.
+
 ### `relocal ssh [session-name]`
 
 Opens an interactive SSH shell in the remote session directory (`~/relocal/<session-name>/`). No sync, lock, or
 background loop — just a direct `ssh -t` that `cd`s into the directory and execs a login shell.
 
-Can be used alongside a running `relocal claude` session to inspect what the agent is doing, make quick manual edits, or
-run commands in the same working directory. Also useful between sessions for debugging or general remote work.
+Can be used alongside a running `relocal claude` or `relocal codex` session to inspect what the agent is doing, make
+quick manual edits, or run commands in the same working directory. Also useful between sessions for debugging or general
+remote work.
 
 ### `relocal sync push [session-name]`
 
@@ -182,6 +193,7 @@ Shows information about the current session:
 - Remote working directory path
 - Whether the remote working directory exists
 - Whether Claude is installed on the remote
+- Whether Codex is installed on the remote
 
 ### `relocal list`
 
@@ -254,12 +266,13 @@ See [Future Improvements](#future-improvements) for plans to support bidirection
 
 ## SSH Connection Sharing
 
-All SSH and rsync commands during a `relocal claude` session share a single persistent SSH connection via OpenSSH's
-ControlMaster feature. This avoids the overhead of establishing a new TCP+SSH handshake for every command.
+All SSH and rsync commands during a session (`relocal claude` or `relocal codex`) share a single persistent SSH
+connection via OpenSSH's ControlMaster feature. This avoids the overhead of establishing a new TCP+SSH handshake for
+every command.
 
 ### ControlMaster Setup
 
-At the start of a `relocal claude` session, a ControlMaster is established:
+At the start of a session, a ControlMaster is established:
 
 ```
 ssh -o ControlMaster=yes -o ControlPath=<socket> -o ControlPersist=300 -N -f <remote>
@@ -295,14 +308,14 @@ This is transparent to higher-level code — the `CommandRunner` trait interface
 ## Background Sync Loop
 
 The background sync loop replaces the previous hook-triggered sidecar. It runs as a local background thread managed by
-`relocal claude`.
+the session command (`relocal claude` or `relocal codex`).
 
 ### Architecture
 
 ```
  LOCAL                          REMOTE
 ┌─────────────┐    SSH #1     ┌──────────────────────┐
-│ relocal     │───(ssh -t)───→│ claude session       │
+│ relocal     │───(ssh -t)───→│ agent session        │
 │             │               │                      │
 │ sync loop   │    rsync      │                      │
 │  └─ pull ───│──────────────→│  (every ~3 seconds)  │
@@ -349,10 +362,10 @@ The polling approach is less efficient than hook-triggered syncs — it runs rsy
   side of `--delete` on push is the remote, not local).
 - **Missing `relocal.toml`**: All commands except `init` fail with a clear error message. Only the current working
   directory is checked (no upward walk).
-- **Remote directory does not exist**: `claude` creates it. `ssh` fails (the remote `cd` fails and the user sees the
-  shell error). `sync` fails (rsync reports the error). `status` reports that the directory does not exist (does not
+- **Remote directory does not exist**: `claude`/`codex` creates it. `ssh` fails (the remote `cd` fails and the user sees
+  the shell error). `sync` fails (rsync reports the error). `status` reports that the directory does not exist (does not
   fail). `destroy` fails with a message that the session was not found.
-- **Claude not installed on remote**: `claude` fails with a message suggesting `relocal remote install`.
+- **Tool not installed on remote**: `claude`/`codex` fails with a message suggesting `relocal remote install`.
 
 ## Implementation
 
@@ -379,8 +392,8 @@ Code and design choices should favor testability. Specifically:
 
 - **Trait abstraction for command execution**: A `CommandRunner` trait (or equivalent) abstracts shelling out to `ssh`,
   `rsync`, and other external commands. The production implementation uses `std::process::Command`. Test implementations
-  record invocations and return configured results. This allows orchestration logic (sync loop, `claude`, `install`) to
-  be tested without real SSH.
+  record invocations and return configured results. This allows orchestration logic (sync loop, session commands,
+  `install`) to be tested without real SSH.
 
 - **Function signatures that enable testing**:
   - Config parsing: `&str` → `Result<Config, Error>`
@@ -473,7 +486,7 @@ completion (including on panic, via `Drop` guard).
 
 #### Session Lifecycle
 
-- `claude` creates remote directory, performs initial push.
+- `claude`/`codex` creates remote directory, performs initial push.
 - On clean exit: final pull is performed, summary is printed.
 - `destroy` removes working directory.
 - `destroy` on non-existent session → error.
@@ -492,6 +505,7 @@ completion (including on panic, via `Drop` guard).
 
 - Reports correct remote host and path.
 - Reports whether remote directory exists.
+- Reports whether Claude and Codex are installed.
 
 #### `relocal remote nuke`
 

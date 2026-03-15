@@ -87,6 +87,17 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Command::Codex {
+            session_name,
+            codex_args,
+        } => {
+            let (root, cfg) = load_config();
+            let session = resolve_session(session_name, &root);
+            if let Err(e) = commands::codex::run(&cfg, &session, &root, verbose, &codex_args) {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
         Command::Ssh { session_name } => {
             let (root, cfg) = load_config();
             let runner = runner::ProcessRunner::default();

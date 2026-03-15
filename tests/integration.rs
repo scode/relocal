@@ -13,7 +13,8 @@
 
 use std::sync::Arc;
 
-use relocal::commands::{claude, destroy, nuke, sync};
+use relocal::commands::session::ToolConfig;
+use relocal::commands::{destroy, nuke, session, sync};
 use relocal::config::Config;
 use relocal::runner::{CommandRunner, ProcessRunner};
 use relocal::sidecar::Sidecar;
@@ -26,6 +27,14 @@ use relocal::ssh;
 /// Returns the test remote from the environment, or None if not set.
 fn test_remote() -> Option<String> {
     std::env::var("RELOCAL_TEST_REMOTE").ok()
+}
+
+fn claude_tool() -> ToolConfig {
+    ToolConfig {
+        display_name: "Claude Code",
+        check_installed: ssh::check_claude_installed,
+        start_session: ssh::start_claude_session,
+    }
 }
 
 /// Generates a unique session name for a test to avoid collisions.
@@ -118,7 +127,7 @@ fn remote_dir(session: &str) -> String {
 }
 
 /// Ensures the remote session directory exists (for tests that call sync directly
-/// without going through `claude::setup`).
+/// without going through `session::setup`).
 fn ensure_remote_session_dir(remote: &str, session: &str) {
     let runner = ProcessRunner::default();
     runner
@@ -421,7 +430,15 @@ fn setup_creates_dir_and_pushes() {
 
     std::fs::write(dir.path().join("data.txt"), "hello").unwrap();
 
-    claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
+    session::setup(
+        &claude_tool(),
+        &runner,
+        &config,
+        &session,
+        dir.path(),
+        false,
+    )
+    .unwrap();
 
     // Remote dir exists with pushed data
     assert!(remote_file_exists(
@@ -440,7 +457,15 @@ fn destroy_removes_dir() {
     let runner = ProcessRunner::default();
 
     // Setup first
-    claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
+    session::setup(
+        &claude_tool(),
+        &runner,
+        &config,
+        &session,
+        dir.path(),
+        false,
+    )
+    .unwrap();
 
     // Destroy (no confirm in test)
     destroy::run(&runner, &config, &session, false).unwrap();
@@ -465,7 +490,15 @@ fn background_sync_pulls_remote_changes() {
     let runner = ProcessRunner::default();
 
     // Setup: push initial state
-    claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
+    session::setup(
+        &claude_tool(),
+        &runner,
+        &config,
+        &session,
+        dir.path(),
+        false,
+    )
+    .unwrap();
 
     // Start background sync loop
     let sidecar_runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(ProcessRunner::default());
@@ -511,7 +544,15 @@ fn background_sync_shutdown_is_prompt() {
     };
     let runner = ProcessRunner::default();
 
-    claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
+    session::setup(
+        &claude_tool(),
+        &runner,
+        &config,
+        &session,
+        dir.path(),
+        false,
+    )
+    .unwrap();
 
     let sidecar_runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(ProcessRunner::default());
     let mut sidecar = Sidecar::start(
@@ -592,7 +633,15 @@ fn status_reports_correct_info() {
     assert!(!check.status.success());
 
     // After setup: dir should exist
-    claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
+    session::setup(
+        &claude_tool(),
+        &runner,
+        &config,
+        &session,
+        dir.path(),
+        false,
+    )
+    .unwrap();
 
     let check = runner
         .run_ssh(&remote, &ssh::check_work_dir_exists(&session))
@@ -624,6 +673,9 @@ fn status_command_reports_missing_then_existing_directory() {
     let missing_stderr = String::from_utf8_lossy(&missing_output.stderr);
     assert!(missing_stderr.contains(&format!("Session:    {session}")));
     assert!(missing_stderr.contains("Directory:  not found"));
+    // Tool installation checks appear regardless of directory state
+    assert!(missing_stderr.contains("Claude:"));
+    assert!(missing_stderr.contains("Codex:"));
 
     ensure_remote_session_dir(&remote, &session);
 
@@ -639,6 +691,8 @@ fn status_command_reports_missing_then_existing_directory() {
     );
     let existing_stderr = String::from_utf8_lossy(&existing_output.stderr);
     assert!(existing_stderr.contains("Directory:  exists"));
+    assert!(existing_stderr.contains("Claude:"));
+    assert!(existing_stderr.contains("Codex:"));
 }
 
 #[test]

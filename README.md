@@ -8,21 +8,21 @@
 >
 > Bugs or misconfiguration can delete local files. There are safety checks but the tool has not been battle-tested.
 
-relocal runs Claude Code on a remote Ubuntu host while keeping your local repo current with Claude's changes. Your code
-is pushed to the remote at session start, and a background loop continuously pulls remote changes back to local while
-Claude works. You can review Claude's output locally in your editor while it runs in your terminal. Local edits during a
-session are not synced to the remote — use `relocal sync push` between sessions to send local changes.
+relocal runs AI coding agents (Claude Code, Codex) on a remote Ubuntu host while keeping your local repo in sync. Your
+code is pushed to the remote at session start, and a background loop continuously pulls remote changes back to local
+while the agent works. You review output locally in your editor while the session runs in your terminal. Local edits
+during a session are not synced to the remote — use `relocal sync push` between sessions to send local changes.
 
 ## Security Model and Host Exposure
 
-`relocal` runs Claude remotely with `--dangerously-skip-permissions` and syncs your repo with `rsync --delete`,
-including the entire `.git/` directory. Your code is pushed at session start, and a background loop continuously pulls
-remote changes to local while the session runs.
+`relocal` runs agents unsandboxed on the remote (Claude with `--dangerously-skip-permissions`, Codex with `--yolo`) and
+syncs your repo with `rsync --delete`, including the entire `.git/` directory. Your code is pushed at session start, and
+a background loop continuously pulls remote changes to local while the session runs.
 
 ### Caveats
 
-This design is intended to provide enough isolation to run Claude with `--dangerously-skip-permissions` in many setups,
-but there are real caveats and exposure paths you should treat as in-scope risk.
+This design is intended to provide enough isolation to run agents unsandboxed in many setups, but there are real caveats
+and exposure paths you should treat as in-scope risk.
 
 If your remote is `localhost` (or the same machine/account as your workstation), there is no real isolation. In that
 setup, remote execution is effectively local unsandboxed execution.
@@ -47,7 +47,8 @@ trustworthy.
 - Prefer a dedicated throwaway VM/user and a dedicated local clone for relocal sessions.
 - Do not authenticate to external services from the remote sandbox (GitHub CLI, cloud CLIs, package registries,
   databases, internal systems, etc.).
-- Claude authentication on the remote is the only expected exception needed for relocal to function.
+- Agent authentication on the remote (Claude login, Codex API key) is the only expected exception needed for relocal to
+  function.
 - Keep sensitive credentials and privileged operations on your local machine.
 - If credentials are entered on the remote, rotate/revoke them promptly.
 
@@ -107,11 +108,15 @@ grep -qxF 'relocal.toml' .gitignore 2>/dev/null || echo 'relocal.toml' >> .gitig
 # Install dependencies on the remote (Rust, Node, Claude Code, Codex, etc.)
 relocal remote install
 
-# Start a session — syncs your repo and launches Claude on the remote
-relocal claude
+# Start a session
+relocal claude    # Claude Code
+relocal codex     # Codex
 ```
 
 Once the session is running, a background loop keeps local in sync with remote changes automatically.
+
+Both Claude and Codex authenticate during `relocal remote install`. Codex uses a device code flow (prints a URL and
+one-time code to enter in any browser).
 
 ### Common Commands
 
