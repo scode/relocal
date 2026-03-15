@@ -6,6 +6,10 @@
 //! semantics live here so callers do not each reimplement the same
 //! exit-code-to-meaning translation.
 
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
 use shell_quote::{Bash, QuoteRefExt};
 
 use crate::error::{Error, Result};
@@ -31,105 +35,43 @@ pub fn rm_work_dir(session: &str) -> String {
     format!("rm -rf {}", remote_work_dir(session))
 }
 
-/// Returns the path to a session's request FIFO.
-pub fn fifo_request_path(session: &str) -> String {
-    format!("{RELOCAL_DIR}/.fifos/{session}-request")
-}
-
-/// Returns the path to a session's ack FIFO.
-pub fn fifo_ack_path(session: &str) -> String {
-    format!("{RELOCAL_DIR}/.fifos/{session}-ack")
-}
-
-/// Command to create both FIFOs for a session.
-pub fn create_fifos(session: &str) -> String {
-    format!(
-        "mkfifo {} {}",
-        fifo_request_path(session),
-        fifo_ack_path(session)
-    )
-}
-
-/// Command to check whether either FIFO exists (exit 0 = exists).
-pub fn check_fifos_exist(session: &str) -> String {
-    format!(
-        "test -e {} -o -e {}",
-        fifo_request_path(session),
-        fifo_ack_path(session)
-    )
-}
-
-/// Command to remove both FIFOs for a session.
-pub fn remove_fifos(session: &str) -> String {
-    format!(
-        "rm -f {} {}",
-        fifo_request_path(session),
-        fifo_ack_path(session)
-    )
-}
-
-/// Command to read from the request FIFO (blocks until a writer sends data).
-/// Wrapped in a loop because each `cat` exits after one write/close cycle.
-pub fn read_request_fifo(session: &str) -> String {
-    format!("while true; do cat {}; done", fifo_request_path(session))
-}
-
-/// Command to write an ack message to the ack FIFO.
-///
-/// The message is shell-quoted to prevent injection via single quotes
-/// or other metacharacters in error messages.
-pub fn write_ack(session: &str, message: &str) -> String {
-    let quoted: String = message.quoted(Bash);
-    format!("echo {} > {}", quoted, fifo_ack_path(session))
-}
-
-/// Command to read the remote `.claude/settings.json` for a session.
-pub fn read_settings_json(session: &str) -> String {
-    format!("cat {}/.claude/settings.json", remote_work_dir(session))
-}
-
-/// Command to write content to the remote `.claude/settings.json`.
-/// Uses a heredoc to handle arbitrary JSON content safely.
-pub fn write_settings_json(session: &str, content: &str) -> String {
-    format!(
-        "mkdir -p {}/.claude && cat > {}/.claude/settings.json << 'RELOCAL_EOF'\n{}\nRELOCAL_EOF",
-        remote_work_dir(session),
-        remote_work_dir(session),
-        content
-    )
-}
-
-/// Command to create the FIFO directory.
-pub fn mkdir_fifos_dir() -> String {
-    format!("mkdir -p {RELOCAL_DIR}/.fifos")
-}
-
-/// Command to create the bin directory.
-pub fn mkdir_bin_dir() -> String {
-    format!("mkdir -p {RELOCAL_DIR}/.bin")
-}
-
-/// Command to create the logs directory.
-pub fn mkdir_logs_dir() -> String {
-    format!("mkdir -p {RELOCAL_DIR}/.logs")
-}
-
-/// Path to the hook helper script on the remote.
-pub fn hook_script_path() -> String {
-    format!("{RELOCAL_DIR}/.bin/relocal-hook.sh")
-}
-
 /// Command to remove the entire relocal directory (nuke).
 pub fn rm_relocal_dir() -> String {
     format!("rm -rf {RELOCAL_DIR}")
 }
 
-/// Command to list session directories with sizes (excludes `.bin/`, `.fifos/`, and `.logs/`).
+/// Path to a session's lock file on the remote.
+fn lock_file_path(session: &str) -> String {
+    format!("{RELOCAL_DIR}/.locks/{session}.lock")
+}
+
+/// Command to create a lock file for a session (fails if it already exists).
+///
+/// Uses `set -o noclobber` so the redirect fails if the file exists, providing
+/// atomic stale-session detection without requiring external tools.
+pub fn create_lock_file(session: &str) -> String {
+    format!(
+        "mkdir -p {RELOCAL_DIR}/.locks && ( set -o noclobber; echo $$ > {} )",
+        lock_file_path(session)
+    )
+}
+
+/// Command to check whether a lock file exists for a session.
+pub fn check_lock_file_exists(session: &str) -> String {
+    format!("test -e {}", lock_file_path(session))
+}
+
+/// Command to remove a session's lock file.
+pub fn remove_lock_file(session: &str) -> String {
+    format!("rm -f {}", lock_file_path(session))
+}
+
+/// Command to list session directories with sizes.
 ///
 /// Output format: `<name>\t<size>` per line, e.g. `my-session\t4.0K`.
 pub fn list_sessions() -> String {
     format!(
-        "cd {RELOCAL_DIR} 2>/dev/null && for d in $(ls -1 | grep -v '^\\.bin$' | grep -v '^\\.fifos$' | grep -v '^\\.logs$'); do size=$(du -sh \"$d\" 2>/dev/null | cut -f1); printf '%s\\t%s\\n' \"$d\" \"$size\"; done"
+        "cd {RELOCAL_DIR} 2>/dev/null && for d in $(ls -1); do size=$(du -sh \"$d\" 2>/dev/null | cut -f1); printf '%s\\t%s\\n' \"$d\" \"$size\"; done"
     )
 }
 
@@ -220,6 +162,93 @@ pub fn start_claude_session(session: &str, extra_args: &[String]) -> String {
     cmd
 }
 
+/// Manages a persistent SSH ControlMaster connection.
+///
+/// All SSH and rsync commands during a session can share this connection,
+/// avoiding repeated TCP+SSH handshakes.
+pub struct SshControlMaster {
+    socket_path: PathBuf,
+    remote: String,
+}
+
+impl SshControlMaster {
+    /// Establishes a ControlMaster connection to the remote.
+    ///
+    /// Creates a background SSH process (`-N -f`) that holds the connection
+    /// open. The socket path is kept short to stay under the 104-byte Unix
+    /// socket limit on macOS: `rlc-<prefix>-<hash>` where prefix is up to 20
+    /// chars of the session name and hash encodes session+PID.
+    pub fn start(remote: &str, session: &str) -> Result<Self> {
+        let socket_path = Self::socket_path_for(session);
+
+        let status = Command::new("ssh")
+            .args([
+                "-o",
+                "ControlMaster=yes",
+                "-o",
+                &format!("ControlPath={}", socket_path.display()),
+                "-o",
+                "ControlPersist=300",
+                "-N",
+                "-f",
+                remote,
+            ])
+            .status()?;
+
+        if !status.success() {
+            return Err(Error::CommandFailed {
+                command: "ssh ControlMaster".to_string(),
+                message: format!("failed to establish ControlMaster to {remote}"),
+            });
+        }
+
+        Ok(Self {
+            socket_path,
+            remote: remote.to_string(),
+        })
+    }
+
+    /// Builds a short, collision-resistant socket path.
+    ///
+    /// Format: `$TMPDIR/rlc-<prefix>-<hash>` where prefix is up to 20 chars
+    /// of the session name (for human readability) and hash is an 8-hex-digit
+    /// digest of session+PID (for uniqueness). The fixed-length filename keeps
+    /// the total path under the 104-byte Unix socket limit on macOS.
+    fn socket_path_for(session: &str) -> PathBuf {
+        let prefix: String = session.chars().take(20).collect();
+        let pid = std::process::id();
+        let mut hasher = std::hash::DefaultHasher::new();
+        session.hash(&mut hasher);
+        pid.hash(&mut hasher);
+        let hash = hasher.finish() as u32;
+        std::env::temp_dir().join(format!("rlc-{prefix}-{hash:08x}"))
+    }
+
+    /// Returns the socket path for injecting into other SSH/rsync commands.
+    pub fn socket_path(&self) -> &Path {
+        &self.socket_path
+    }
+
+    /// Tears down the ControlMaster connection.
+    pub fn stop(&self) {
+        let _ = Command::new("ssh")
+            .args([
+                "-O",
+                "exit",
+                "-o",
+                &format!("ControlPath={}", self.socket_path.display()),
+                &self.remote,
+            ])
+            .output();
+    }
+}
+
+impl Drop for SshControlMaster {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,6 +269,59 @@ mod tests {
     }
 
     #[test]
+    fn control_socket_path_fits_unix_limit() {
+        // Unix socket paths max out at 104 bytes on macOS.
+        // Even with a long session name and a long $TMPDIR, the path must fit.
+        let long_session = "a]".repeat(50); // 100-char session name
+        let path = SshControlMaster::socket_path_for(&long_session);
+        let path_str = path.to_str().unwrap();
+        assert!(
+            path_str.len() <= 104,
+            "socket path too long ({} bytes): {path_str}",
+            path_str.len()
+        );
+    }
+
+    #[test]
+    fn control_socket_path_includes_session_prefix() {
+        let path = SshControlMaster::socket_path_for("my-cool-project");
+        let filename = path.file_name().unwrap().to_str().unwrap();
+        assert!(filename.starts_with("rlc-my-cool-project-"));
+    }
+
+    #[test]
+    fn control_socket_path_truncates_long_session() {
+        let path = SshControlMaster::socket_path_for("this-is-a-very-long-session-name-indeed");
+        let filename = path.file_name().unwrap().to_str().unwrap();
+        // 20-char prefix: "this-is-a-very-long-"
+        assert!(
+            filename.starts_with("rlc-this-is-a-very-long--"),
+            "unexpected filename: {filename}"
+        );
+    }
+
+    #[test]
+    fn lock_file_path_format() {
+        assert_eq!(lock_file_path("s1"), "~/relocal/.locks/s1.lock");
+    }
+
+    #[test]
+    fn create_lock_file_format() {
+        let cmd = create_lock_file("s1");
+        assert!(cmd.contains("mkdir -p"));
+        assert!(cmd.contains(".locks"));
+        assert!(cmd.contains("noclobber"));
+        assert!(cmd.contains("s1.lock"));
+    }
+
+    #[test]
+    fn remove_lock_file_format() {
+        let cmd = remove_lock_file("s1");
+        assert!(cmd.contains("rm -f"));
+        assert!(cmd.contains("s1.lock"));
+    }
+
+    #[test]
     fn remote_work_dir_format() {
         assert_eq!(remote_work_dir("my-proj"), "~/relocal/my-proj");
     }
@@ -255,96 +337,11 @@ mod tests {
     }
 
     #[test]
-    fn fifo_paths() {
-        assert_eq!(fifo_request_path("s1"), "~/relocal/.fifos/s1-request");
-        assert_eq!(fifo_ack_path("s1"), "~/relocal/.fifos/s1-ack");
-    }
-
-    #[test]
-    fn create_fifos_format() {
-        let cmd = create_fifos("s1");
-        assert!(cmd.contains("mkfifo"));
-        assert!(cmd.contains("s1-request"));
-        assert!(cmd.contains("s1-ack"));
-    }
-
-    #[test]
-    fn check_fifos_exist_format() {
-        let cmd = check_fifos_exist("s1");
-        assert!(cmd.contains("test -e"));
-        assert!(cmd.contains("s1-request"));
-        assert!(cmd.contains("s1-ack"));
-    }
-
-    #[test]
-    fn remove_fifos_format() {
-        let cmd = remove_fifos("s1");
-        assert!(cmd.contains("rm -f"));
-        assert!(cmd.contains("s1-request"));
-        assert!(cmd.contains("s1-ack"));
-    }
-
-    #[test]
-    fn read_request_fifo_loops() {
-        let cmd = read_request_fifo("s1");
-        assert!(cmd.contains("while true"));
-        assert!(cmd.contains("cat"));
-        assert!(cmd.contains("s1-request"));
-    }
-
-    #[test]
-    fn write_ack_format() {
-        let ack = write_ack("s1", "ok");
-        assert!(ack.contains("ok"));
-        assert!(ack.ends_with("~/relocal/.fifos/s1-ack"));
-
-        let err_ack = write_ack("s1", "error:rsync failed");
-        assert!(err_ack.contains("error:rsync failed"));
-        assert!(err_ack.ends_with("~/relocal/.fifos/s1-ack"));
-    }
-
-    #[test]
-    fn write_ack_escapes_single_quotes() {
-        let ack = write_ack("s1", "error:it's broken");
-        // Must not produce unbalanced quotes — shell_quote handles this
-        assert!(ack.contains("it"));
-        assert!(ack.contains("broken"));
-        // The raw string "error:it's broken" with unescaped quote must NOT appear
-        assert!(!ack.contains("echo 'error:it's broken'"));
-    }
-
-    #[test]
-    fn read_settings_json_format() {
-        let cmd = read_settings_json("s1");
-        assert_eq!(cmd, "cat ~/relocal/s1/.claude/settings.json");
-    }
-
-    #[test]
-    fn write_settings_json_creates_dir() {
-        let cmd = write_settings_json("s1", "{\"hooks\":{}}");
-        assert!(cmd.contains("mkdir -p ~/relocal/s1/.claude"));
-        assert!(cmd.contains("{\"hooks\":{}}"));
-        assert!(cmd.contains("RELOCAL_EOF"));
-    }
-
-    #[test]
-    fn hook_script_path_format() {
-        assert_eq!(hook_script_path(), "~/relocal/.bin/relocal-hook.sh");
-    }
-
-    #[test]
-    fn mkdir_logs_dir_format() {
-        assert_eq!(mkdir_logs_dir(), "mkdir -p ~/relocal/.logs");
-    }
-
-    #[test]
-    fn list_sessions_excludes_dot_dirs() {
+    fn list_sessions_format() {
         let cmd = list_sessions();
-        assert!(cmd.contains("grep -v"));
-        assert!(cmd.contains(".bin"));
-        assert!(cmd.contains(".fifos"));
-        assert!(cmd.contains(".logs"));
         assert!(cmd.contains("du -sh"));
+        // No longer filters dot-dirs
+        assert!(!cmd.contains("grep -v"));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Integration tests for relocal.
 //!
-//! These tests exercise real SSH, rsync, and FIFO operations against a
+//! These tests exercise real SSH, rsync, and filesystem operations against a
 //! remote host (which may be localhost). They are gated on the
 //! `RELOCAL_TEST_REMOTE` environment variable — when unset, all tests
 //! are `#[ignore]`d.
@@ -11,14 +11,16 @@
 //! RELOCAL_TEST_REMOTE=$USER@localhost cargo test -- --ignored --test-threads=1
 //! ```
 
+use std::sync::Arc;
+
 use relocal::commands::{claude, destroy, nuke, sync};
 use relocal::config::Config;
-use relocal::hooks;
 use relocal::runner::{CommandRunner, ProcessRunner};
+use relocal::sidecar::Sidecar;
 use relocal::ssh;
 
 // ---------------------------------------------------------------------------
-// Test infrastructure (step 13a)
+// Test infrastructure
 // ---------------------------------------------------------------------------
 
 /// Returns the test remote from the environment, or None if not set.
@@ -80,7 +82,6 @@ impl Drop for RemoteCleanup {
         let runner = ProcessRunner::default();
         // Best-effort cleanup
         let _ = runner.run_ssh(&self.remote, &ssh::rm_work_dir(&self.session));
-        let _ = runner.run_ssh(&self.remote, &ssh::remove_fifos(&self.session));
     }
 }
 
@@ -126,7 +127,7 @@ fn ensure_remote_session_dir(remote: &str, session: &str) {
 }
 
 // ---------------------------------------------------------------------------
-// 13b. Sync push tests
+// Sync push tests
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -277,7 +278,7 @@ fn push_excludes_claude_dir() {
 }
 
 // ---------------------------------------------------------------------------
-// 13c. Sync pull tests
+// Sync pull tests
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -341,31 +342,6 @@ fn pull_deletes_propagate() {
 #[test]
 #[ignore = "requires RELOCAL_TEST_REMOTE"]
 fn pull_keeps_gitignored_relocal_toml_across_repeated_pulls() {
-    // Regression test for a POLA-violating interaction between rsync delete
-    // semantics and per-directory .gitignore filters:
-    //
-    // - relocal uses rsync --delete so pull mirrors remote -> local.
-    // - relocal also uses --filter=:- .gitignore so ignored files are omitted
-    //   from the sender's file list.
-    // - Many users put relocal.toml in .gitignore (the README quick-start
-    //   explicitly suggests that), so pushes do not copy relocal.toml to
-    //   the remote session directory.
-    //
-    // With the old rsync args, this caused an unexpected sequence:
-    //
-    // 1) relocal.toml exists locally.
-    // 2) push succeeds (relocal.toml is ignored, so absent on remote).
-    // 3) first pull succeeds, but --delete sees local relocal.toml as
-    //    destination-only and removes it.
-    // 4) second pull fails before rsync because relocal.toml is gone and
-    //    relocal no longer recognizes the current directory as a repo root.
-    //
-    // Fix: build_rsync_args now always adds:
-    // - --exclude=/relocal.toml        (never transfer config file)
-    // - --filter=P /relocal.toml       (protect destination copy from delete)
-    //
-    // This test mirrors the real-world report's "push -> pull -> pull" flow and
-    // asserts relocal.toml remains present after each pull.
     let remote = test_remote().unwrap();
     let session = unique_session("pull-keep-relocal-toml");
     let (dir, config) = make_local_repo(&remote);
@@ -428,359 +404,12 @@ fn pull_excludes_claude_dir() {
 }
 
 // ---------------------------------------------------------------------------
-// 13d. Hook injection tests
+// Session lifecycle tests
 // ---------------------------------------------------------------------------
 
 #[test]
 #[ignore = "requires RELOCAL_TEST_REMOTE"]
-fn setup_installs_hooks_with_correct_session_name() {
-    let remote = test_remote().unwrap();
-    let session = unique_session("hook-inject");
-    let (dir, config) = make_local_repo(&remote);
-    let _cleanup = RemoteCleanup {
-        remote: remote.clone(),
-        session: session.clone(),
-    };
-    let runner = ProcessRunner::default();
-
-    claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
-    claude::cleanup(&runner, &config, &session).unwrap();
-
-    let settings = read_remote_file(
-        &remote,
-        &format!("{}/.claude/settings.json", remote_dir(&session)),
-    )
-    .unwrap();
-
-    // Hooks present with correct session name
-    assert!(settings.contains("relocal-hook.sh"));
-    assert!(settings.contains(&format!("RELOCAL_SESSION={session}")));
-}
-
-// ---------------------------------------------------------------------------
-// 13e. FIFO lifecycle tests
-// ---------------------------------------------------------------------------
-
-#[test]
-#[ignore = "requires RELOCAL_TEST_REMOTE"]
-fn fifos_created_by_setup() {
-    let remote = test_remote().unwrap();
-    let session = unique_session("fifo-create");
-    let (dir, config) = make_local_repo(&remote);
-    let _cleanup = RemoteCleanup {
-        remote: remote.clone(),
-        session: session.clone(),
-    };
-    let runner = ProcessRunner::default();
-
-    claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
-
-    assert!(remote_file_exists(
-        &remote,
-        &ssh::fifo_request_path(&session)
-    ));
-    assert!(remote_file_exists(&remote, &ssh::fifo_ack_path(&session)));
-}
-
-#[test]
-#[ignore = "requires RELOCAL_TEST_REMOTE"]
-fn fifos_removed_by_cleanup() {
-    let remote = test_remote().unwrap();
-    let session = unique_session("fifo-cleanup");
-    let (dir, config) = make_local_repo(&remote);
-    let _cleanup = RemoteCleanup {
-        remote: remote.clone(),
-        session: session.clone(),
-    };
-    let runner = ProcessRunner::default();
-
-    claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
-    claude::cleanup(&runner, &config, &session).unwrap();
-
-    assert!(!remote_file_exists(
-        &remote,
-        &ssh::fifo_request_path(&session)
-    ));
-    assert!(!remote_file_exists(&remote, &ssh::fifo_ack_path(&session)));
-}
-
-#[test]
-#[ignore = "requires RELOCAL_TEST_REMOTE"]
-fn stale_fifos_prevent_setup() {
-    let remote = test_remote().unwrap();
-    let session = unique_session("fifo-stale");
-    let (dir, config) = make_local_repo(&remote);
-    let _cleanup = RemoteCleanup {
-        remote: remote.clone(),
-        session: session.clone(),
-    };
-    let runner = ProcessRunner::default();
-
-    // Pre-create FIFOs
-    runner.run_ssh(&remote, &ssh::mkdir_fifos_dir()).unwrap();
-    runner
-        .run_ssh(&remote, &ssh::create_fifos(&session))
-        .unwrap();
-
-    // Setup should fail with stale session error
-    let result = claude::setup(&runner, &config, &session, dir.path(), false);
-    assert!(result.is_err());
-    let err = result.unwrap_err().to_string();
-    assert!(err.contains("stale session") || err.contains("FIFOs already exist"));
-}
-
-// ---------------------------------------------------------------------------
-// 13f. Sidecar tests (using real SSH + FIFO)
-// ---------------------------------------------------------------------------
-
-#[test]
-#[ignore = "requires RELOCAL_TEST_REMOTE"]
-fn sidecar_push_request_syncs_and_acks() {
-    let remote = test_remote().unwrap();
-    let session = unique_session("sidecar-push");
-    let (dir, config) = make_local_repo(&remote);
-    let _cleanup = RemoteCleanup {
-        remote: remote.clone(),
-        session: session.clone(),
-    };
-    let runner = ProcessRunner::default();
-
-    // Setup creates remote dir + FIFOs + initial push
-    claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
-
-    // Start sidecar
-    let sidecar_runner: std::sync::Arc<dyn CommandRunner + Send + Sync> =
-        std::sync::Arc::new(ProcessRunner::default());
-    let mut sidecar = relocal::sidecar::Sidecar::start(
-        sidecar_runner,
-        config.clone(),
-        session.clone(),
-        dir.path().to_path_buf(),
-        false,
-    )
-    .unwrap();
-
-    // Create a new local file
-    std::fs::write(dir.path().join("sidecar-test.txt"), "sidecar").unwrap();
-
-    // Write "push" to the request FIFO
-    runner
-        .run_ssh(
-            &remote,
-            &format!("echo push > {}", ssh::fifo_request_path(&session)),
-        )
-        .unwrap();
-
-    // Read ack from the ack FIFO
-    let ack = runner
-        .run_ssh(&remote, &format!("cat {}", ssh::fifo_ack_path(&session)))
-        .unwrap();
-
-    assert_eq!(ack.stdout.trim(), "ok");
-
-    // Verify file was synced
-    assert!(remote_file_exists(
-        &remote,
-        &format!("{}/sidecar-test.txt", remote_dir(&session))
-    ));
-
-    sidecar.shutdown();
-}
-
-#[test]
-#[ignore = "requires RELOCAL_TEST_REMOTE"]
-fn sidecar_pull_request_syncs_and_acks() {
-    let remote = test_remote().unwrap();
-    let session = unique_session("sidecar-pull");
-    let (dir, config) = make_local_repo(&remote);
-    let _cleanup = RemoteCleanup {
-        remote: remote.clone(),
-        session: session.clone(),
-    };
-    let runner = ProcessRunner::default();
-
-    claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
-
-    let sidecar_runner: std::sync::Arc<dyn CommandRunner + Send + Sync> =
-        std::sync::Arc::new(ProcessRunner::default());
-    let mut sidecar = relocal::sidecar::Sidecar::start(
-        sidecar_runner,
-        config.clone(),
-        session.clone(),
-        dir.path().to_path_buf(),
-        false,
-    )
-    .unwrap();
-
-    // Create a file on the remote
-    write_remote_file(
-        &remote,
-        &format!("{}/remote-only.txt", remote_dir(&session)),
-        "remote data",
-    );
-
-    // Write "pull" to the request FIFO
-    runner
-        .run_ssh(
-            &remote,
-            &format!("echo pull > {}", ssh::fifo_request_path(&session)),
-        )
-        .unwrap();
-
-    // Read ack
-    let ack = runner
-        .run_ssh(&remote, &format!("cat {}", ssh::fifo_ack_path(&session)))
-        .unwrap();
-
-    assert_eq!(ack.stdout.trim(), "ok");
-
-    // Verify file was pulled locally
-    let content = std::fs::read_to_string(dir.path().join("remote-only.txt")).unwrap();
-    assert_eq!(content, "remote data");
-
-    sidecar.shutdown();
-}
-
-#[test]
-#[ignore = "requires RELOCAL_TEST_REMOTE"]
-fn sidecar_clean_shutdown() {
-    let remote = test_remote().unwrap();
-    let session = unique_session("sidecar-shutdown");
-    let (dir, config) = make_local_repo(&remote);
-    let _cleanup = RemoteCleanup {
-        remote: remote.clone(),
-        session: session.clone(),
-    };
-    let runner = ProcessRunner::default();
-
-    claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
-
-    let sidecar_runner: std::sync::Arc<dyn CommandRunner + Send + Sync> =
-        std::sync::Arc::new(ProcessRunner::default());
-    let mut sidecar = relocal::sidecar::Sidecar::start(
-        sidecar_runner,
-        config.clone(),
-        session.clone(),
-        dir.path().to_path_buf(),
-        false,
-    )
-    .unwrap();
-
-    // Sidecar should shut down cleanly without hanging
-    sidecar.shutdown();
-}
-
-// ---------------------------------------------------------------------------
-// 13g. Hook script end-to-end tests
-// ---------------------------------------------------------------------------
-
-#[test]
-#[ignore = "requires RELOCAL_TEST_REMOTE"]
-fn hook_script_ok_ack_exits_zero() {
-    let remote = test_remote().unwrap();
-    let session = unique_session("hook-ok");
-    let _cleanup = RemoteCleanup {
-        remote: remote.clone(),
-        session: session.clone(),
-    };
-    let runner = ProcessRunner::default();
-
-    // Create FIFOs and install hook script
-    runner.run_ssh(&remote, &ssh::mkdir_fifos_dir()).unwrap();
-    runner.run_ssh(&remote, &ssh::mkdir_bin_dir()).unwrap();
-    runner
-        .run_ssh(&remote, &ssh::create_fifos(&session))
-        .unwrap();
-
-    let script = hooks::hook_script_content();
-    let write_cmd = format!(
-        "cat > {} << 'RELOCAL_HOOK_EOF'\n{}\nRELOCAL_HOOK_EOF\nchmod +x {}",
-        ssh::hook_script_path(),
-        script,
-        ssh::hook_script_path()
-    );
-    runner.run_ssh(&remote, &write_cmd).unwrap();
-
-    // Simulate sidecar in a background thread: read request FIFO, write ack.
-    let bg_remote = remote.clone();
-    let bg_session = session.clone();
-    let sidecar_thread = std::thread::spawn(move || {
-        let r = ProcessRunner::default();
-        let cmd = format!(
-            "cat {} > /dev/null && echo ok > {}",
-            ssh::fifo_request_path(&bg_session),
-            ssh::fifo_ack_path(&bg_session)
-        );
-        r.run_ssh(&bg_remote, &cmd).unwrap();
-    });
-
-    // Run the hook script — it writes to request FIFO and reads from ack FIFO
-    let result = runner.run_ssh(
-        &remote,
-        &format!("RELOCAL_SESSION={session} {} push", ssh::hook_script_path()),
-    );
-
-    sidecar_thread.join().unwrap();
-    assert!(result.unwrap().status.success());
-}
-
-#[test]
-#[ignore = "requires RELOCAL_TEST_REMOTE"]
-fn hook_script_error_ack_exits_nonzero() {
-    let remote = test_remote().unwrap();
-    let session = unique_session("hook-err");
-    let _cleanup = RemoteCleanup {
-        remote: remote.clone(),
-        session: session.clone(),
-    };
-    let runner = ProcessRunner::default();
-
-    runner.run_ssh(&remote, &ssh::mkdir_fifos_dir()).unwrap();
-    runner.run_ssh(&remote, &ssh::mkdir_bin_dir()).unwrap();
-    runner
-        .run_ssh(&remote, &ssh::create_fifos(&session))
-        .unwrap();
-
-    let script = hooks::hook_script_content();
-    let write_cmd = format!(
-        "cat > {} << 'RELOCAL_HOOK_EOF'\n{}\nRELOCAL_HOOK_EOF\nchmod +x {}",
-        ssh::hook_script_path(),
-        script,
-        ssh::hook_script_path()
-    );
-    runner.run_ssh(&remote, &write_cmd).unwrap();
-
-    // Simulate sidecar in a background thread: read request FIFO, write error ack.
-    let bg_remote = remote.clone();
-    let bg_session = session.clone();
-    let sidecar_thread = std::thread::spawn(move || {
-        let r = ProcessRunner::default();
-        let cmd = format!(
-            "cat {} > /dev/null && echo 'error:sync failed' > {}",
-            ssh::fifo_request_path(&bg_session),
-            ssh::fifo_ack_path(&bg_session)
-        );
-        r.run_ssh(&bg_remote, &cmd).unwrap();
-    });
-
-    let result = runner.run_ssh(
-        &remote,
-        &format!("RELOCAL_SESSION={session} {} pull", ssh::hook_script_path()),
-    );
-
-    sidecar_thread.join().unwrap();
-    let output = result.unwrap();
-    assert!(!output.status.success());
-    assert!(output.stderr.contains("sync failed"));
-}
-
-// ---------------------------------------------------------------------------
-// 13h. Session lifecycle tests
-// ---------------------------------------------------------------------------
-
-#[test]
-#[ignore = "requires RELOCAL_TEST_REMOTE"]
-fn setup_creates_dir_fifos_pushes_hooks() {
+fn setup_creates_dir_and_pushes() {
     let remote = test_remote().unwrap();
     let session = unique_session("lifecycle-setup");
     let (dir, config) = make_local_repo(&remote);
@@ -794,30 +423,16 @@ fn setup_creates_dir_fifos_pushes_hooks() {
 
     claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
 
-    // Remote dir exists
+    // Remote dir exists with pushed data
     assert!(remote_file_exists(
         &remote,
         &format!("{}/data.txt", remote_dir(&session))
     ));
-
-    // FIFOs exist
-    assert!(remote_file_exists(
-        &remote,
-        &ssh::fifo_request_path(&session)
-    ));
-
-    // Hooks installed
-    let settings = read_remote_file(
-        &remote,
-        &format!("{}/.claude/settings.json", remote_dir(&session)),
-    );
-    assert!(settings.is_some());
-    assert!(settings.unwrap().contains("relocal-hook.sh"));
 }
 
 #[test]
 #[ignore = "requires RELOCAL_TEST_REMOTE"]
-fn destroy_removes_dir_and_fifos() {
+fn destroy_removes_dir() {
     let remote = test_remote().unwrap();
     let session = unique_session("lifecycle-destroy");
     let (dir, config) = make_local_repo(&remote);
@@ -826,60 +441,105 @@ fn destroy_removes_dir_and_fifos() {
 
     // Setup first
     claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
-    claude::cleanup(&runner, &config, &session).unwrap();
-
-    // Now push some data so we have a working dir
-    sync::sync_push(&runner, &config, &session, dir.path(), false).unwrap();
 
     // Destroy (no confirm in test)
     destroy::run(&runner, &config, &session, false).unwrap();
 
     assert!(!remote_file_exists(&remote, &remote_dir(&session)));
-    assert!(!remote_file_exists(
-        &remote,
-        &ssh::fifo_request_path(&session)
-    ));
 }
 
 // ---------------------------------------------------------------------------
-// 13i. Remote install tests
+// Background sync loop tests
 // ---------------------------------------------------------------------------
 
 #[test]
 #[ignore = "requires RELOCAL_TEST_REMOTE"]
-fn install_creates_hook_script_and_fifos_dir() {
+fn background_sync_pulls_remote_changes() {
     let remote = test_remote().unwrap();
+    let session = unique_session("bg-sync-pull");
+    let (dir, config) = make_local_repo(&remote);
+    let _cleanup = RemoteCleanup {
+        remote: remote.clone(),
+        session: session.clone(),
+    };
     let runner = ProcessRunner::default();
 
-    // Run install (only hook script + fifos dir steps)
-    // We test the hook script and fifos dir steps specifically
-    runner.run_ssh(&remote, &ssh::mkdir_bin_dir()).unwrap();
-    runner.run_ssh(&remote, &ssh::mkdir_fifos_dir()).unwrap();
+    // Setup: push initial state
+    claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
 
-    let script = hooks::hook_script_content();
-    let write_cmd = format!(
-        "cat > {} << 'RELOCAL_HOOK_EOF'\n{}\nRELOCAL_HOOK_EOF\nchmod +x {}",
-        ssh::hook_script_path(),
-        script,
-        ssh::hook_script_path()
+    // Start background sync loop
+    let sidecar_runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(ProcessRunner::default());
+    let mut sidecar = Sidecar::start(
+        sidecar_runner,
+        config.clone(),
+        session.clone(),
+        dir.path().to_path_buf(),
+        false,
+    )
+    .unwrap();
+
+    // Create a file on the remote while the loop is running
+    write_remote_file(
+        &remote,
+        &format!("{}/bg-test.txt", remote_dir(&session)),
+        "from background",
     );
-    runner.run_ssh(&remote, &write_cmd).unwrap();
 
-    assert!(remote_file_exists(&remote, &ssh::hook_script_path()));
-    assert!(remote_file_exists(&remote, "~/relocal/.fifos"));
+    // Wait for at least one poll cycle (interval is 3s, give it some margin)
+    std::thread::sleep(std::time::Duration::from_secs(5));
 
-    // Idempotent: run again
-    runner.run_ssh(&remote, &write_cmd).unwrap();
-    assert!(remote_file_exists(&remote, &ssh::hook_script_path()));
+    sidecar.shutdown();
+
+    // The background loop should have pulled the file
+    assert!(
+        dir.path().join("bg-test.txt").exists(),
+        "background sync did not pull remote file"
+    );
+    let content = std::fs::read_to_string(dir.path().join("bg-test.txt")).unwrap();
+    assert_eq!(content, "from background");
+}
+
+#[test]
+#[ignore = "requires RELOCAL_TEST_REMOTE"]
+fn background_sync_shutdown_is_prompt() {
+    let remote = test_remote().unwrap();
+    let session = unique_session("bg-sync-shutdown");
+    let (dir, config) = make_local_repo(&remote);
+    let _cleanup = RemoteCleanup {
+        remote: remote.clone(),
+        session: session.clone(),
+    };
+    let runner = ProcessRunner::default();
+
+    claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
+
+    let sidecar_runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(ProcessRunner::default());
+    let mut sidecar = Sidecar::start(
+        sidecar_runner,
+        config.clone(),
+        session.clone(),
+        dir.path().to_path_buf(),
+        false,
+    )
+    .unwrap();
+
+    // Shutdown should complete quickly, not wait for the full poll interval
+    let start = std::time::Instant::now();
+    sidecar.shutdown();
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(2),
+        "shutdown took {:?}, expected < 2s",
+        start.elapsed()
+    );
 }
 
 // ---------------------------------------------------------------------------
-// 13j. List / status / nuke tests
+// List / status / nuke tests
 // ---------------------------------------------------------------------------
 
 #[test]
 #[ignore = "requires RELOCAL_TEST_REMOTE"]
-fn list_shows_sessions_and_excludes_dot_dirs() {
+fn list_shows_sessions() {
     let remote = test_remote().unwrap();
     let session1 = unique_session("list-a");
     let session2 = unique_session("list-b");
@@ -900,10 +560,6 @@ fn list_shows_sessions_and_excludes_dot_dirs() {
     runner
         .run_ssh(&remote, &ssh::mkdir_work_dir(&session2))
         .unwrap();
-    // Ensure .bin, .fifos, and .logs exist
-    runner.run_ssh(&remote, &ssh::mkdir_bin_dir()).unwrap();
-    runner.run_ssh(&remote, &ssh::mkdir_fifos_dir()).unwrap();
-    runner.run_ssh(&remote, &ssh::mkdir_logs_dir()).unwrap();
 
     // List sessions via SSH — output format is "name\tsize" per line
     let output = runner.run_ssh(&remote, &ssh::list_sessions()).unwrap();
@@ -915,9 +571,6 @@ fn list_shows_sessions_and_excludes_dot_dirs() {
 
     assert!(session_names.contains(&session1.as_str()));
     assert!(session_names.contains(&session2.as_str()));
-    assert!(!session_names.contains(&".bin"));
-    assert!(!session_names.contains(&".fifos"));
-    assert!(!session_names.contains(&".logs"));
 }
 
 #[test]
@@ -938,16 +591,11 @@ fn status_reports_correct_info() {
         .unwrap();
     assert!(!check.status.success());
 
-    // After setup: dir and FIFOs should exist
+    // After setup: dir should exist
     claude::setup(&runner, &config, &session, dir.path(), false).unwrap();
 
     let check = runner
         .run_ssh(&remote, &ssh::check_work_dir_exists(&session))
-        .unwrap();
-    assert!(check.status.success());
-
-    let check = runner
-        .run_ssh(&remote, &ssh::check_fifos_exist(&session))
         .unwrap();
     assert!(check.status.success());
 }
@@ -1005,8 +653,6 @@ fn nuke_removes_everything() {
     runner
         .run_ssh(&remote, &ssh::mkdir_work_dir(&session))
         .unwrap();
-    runner.run_ssh(&remote, &ssh::mkdir_bin_dir()).unwrap();
-    runner.run_ssh(&remote, &ssh::mkdir_fifos_dir()).unwrap();
 
     // Nuke (no confirm)
     nuke::run(&runner, &config, false).unwrap();
@@ -1015,7 +661,7 @@ fn nuke_removes_everything() {
 }
 
 // ---------------------------------------------------------------------------
-// 13k. Localhost-as-remote test
+// Localhost-as-remote test
 // ---------------------------------------------------------------------------
 
 #[test]

@@ -1,8 +1,6 @@
 //! `relocal sync push` / `relocal sync pull` — manual sync commands.
 //!
-//! Push runs rsync (local → remote). The `.claude/` directory is excluded from
-//! rsync; hooks are managed separately via [`inject_hooks`].
-//! Pull runs rsync (remote → local).
+//! Push runs rsync (local → remote). Pull runs rsync (remote → local).
 
 use std::path::Path;
 
@@ -10,7 +8,6 @@ use tracing::info;
 
 use crate::config::Config;
 use crate::error::Result;
-use crate::hooks::merge_hooks;
 use crate::rsync::{build_rsync_args, Direction};
 use crate::runner::CommandRunner;
 use crate::ssh;
@@ -70,35 +67,6 @@ pub fn sync_pull(
     }
 
     info!("Pull complete.");
-    Ok(())
-}
-
-/// Reads the remote `.claude/settings.json`, merges relocal hooks, and writes
-/// it back. Called once during session setup to install hooks.
-pub fn reinject_hooks(
-    runner: &dyn CommandRunner,
-    config: &Config,
-    session_name: &str,
-) -> Result<()> {
-    info!("Re-injecting hooks...");
-
-    // Read existing settings.json (may not exist yet)
-    let read_result = runner.run_ssh(&config.remote, &ssh::read_settings_json(session_name))?;
-
-    let existing = if read_result.status.success() {
-        serde_json::from_str(&read_result.stdout).ok()
-    } else {
-        None
-    };
-
-    let merged = merge_hooks(existing, session_name);
-    let json_str = serde_json::to_string_pretty(&merged).expect("merged hooks must serialize");
-
-    runner.run_ssh(
-        &config.remote,
-        &ssh::write_settings_json(session_name, &json_str),
-    )?;
-
     Ok(())
 }
 
@@ -168,7 +136,6 @@ mod tests {
                 assert!(last.starts_with("/home/user/my-project/"));
                 let second_last = &args[args.len() - 2];
                 assert!(second_last.contains("user@host:"));
-                assert!(!args.contains(&"--include=.claude/settings.json".to_string()));
             }
             _ => panic!("expected Rsync, got {:?}", inv[1]),
         }
@@ -188,20 +155,6 @@ mod tests {
         // Only the fsck call was made — rsync was never invoked
         let inv = mock.invocations();
         assert_eq!(inv.len(), 1);
-    }
-
-    #[test]
-    fn push_does_not_reinject_hooks() {
-        let mock = MockRunner::new();
-        // rsync only
-        mock.add_response(MockResponse::Ok(String::new()));
-
-        sync_push(&mock, &test_config(), "s1", &repo_root(), false).unwrap();
-
-        let inv = mock.invocations();
-        // Just rsync, no settings.json reads/writes
-        assert_eq!(inv.len(), 1);
-        assert!(matches!(&inv[0], Invocation::Rsync { .. }));
     }
 
     #[test]

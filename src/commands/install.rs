@@ -1,13 +1,12 @@
 //! `relocal remote install` — installs the full environment on the remote host.
 //!
-//! Performs six idempotent steps: APT packages, Rust, Claude Code, Claude auth,
-//! hook script, and FIFO directory. Safe to re-run at any time.
+//! Performs four idempotent steps: APT packages, Rust, Claude Code, and Claude
+//! auth. Safe to re-run at any time.
 
 use tracing::info;
 
 use crate::config::Config;
 use crate::error::Result;
-use crate::hooks::hook_script_content;
 use crate::runner::CommandRunner;
 use crate::ssh;
 
@@ -17,9 +16,6 @@ pub fn run(runner: &dyn CommandRunner, config: &Config) -> Result<()> {
     install_rust(runner, config)?;
     install_claude_code(runner, config)?;
     authenticate_claude(runner, config)?;
-    install_hook_script(runner, config)?;
-    create_fifo_dir(runner, config)?;
-    create_logs_dir(runner, config)?;
 
     info!("Remote installation complete.");
     Ok(())
@@ -79,33 +75,6 @@ fn authenticate_claude(runner: &dyn CommandRunner, config: &Config) -> Result<()
 
     info!("Running claude login (interactive)...");
     runner.run_ssh_interactive(&config.remote, "claude login")?;
-    Ok(())
-}
-
-fn install_hook_script(runner: &dyn CommandRunner, config: &Config) -> Result<()> {
-    info!("Installing hook script...");
-    runner.run_ssh(&config.remote, &ssh::mkdir_bin_dir())?;
-
-    let script = hook_script_content();
-    let write_cmd = format!(
-        "cat > {} << 'RELOCAL_HOOK_EOF'\n{}\nRELOCAL_HOOK_EOF\nchmod +x {}",
-        ssh::hook_script_path(),
-        script,
-        ssh::hook_script_path()
-    );
-    runner.run_ssh(&config.remote, &write_cmd)?;
-    Ok(())
-}
-
-fn create_fifo_dir(runner: &dyn CommandRunner, config: &Config) -> Result<()> {
-    info!("Creating FIFO directory...");
-    runner.run_ssh(&config.remote, &ssh::mkdir_fifos_dir())?;
-    Ok(())
-}
-
-fn create_logs_dir(runner: &dyn CommandRunner, config: &Config) -> Result<()> {
-    info!("Creating logs directory...");
-    runner.run_ssh(&config.remote, &ssh::mkdir_logs_dir())?;
     Ok(())
 }
 
@@ -251,70 +220,6 @@ apt_packages = ["libssl-dev", "pkg-config"]
     }
 
     #[test]
-    fn hook_script_installed() {
-        let mock = MockRunner::new();
-        // mkdir .bin
-        mock.add_response(MockResponse::Ok(String::new()));
-        // write script
-        mock.add_response(MockResponse::Ok(String::new()));
-
-        install_hook_script(&mock, &test_config()).unwrap();
-
-        let inv = mock.invocations();
-        assert_eq!(inv.len(), 2);
-        match &inv[0] {
-            Invocation::Ssh { command, .. } => {
-                assert!(command.contains("mkdir -p"));
-                assert!(command.contains(".bin"));
-            }
-            _ => panic!("expected Ssh"),
-        }
-        match &inv[1] {
-            Invocation::Ssh { command, .. } => {
-                assert!(command.contains("relocal-hook.sh"));
-                assert!(command.contains("chmod +x"));
-            }
-            _ => panic!("expected Ssh"),
-        }
-    }
-
-    #[test]
-    fn fifo_dir_created() {
-        let mock = MockRunner::new();
-        mock.add_response(MockResponse::Ok(String::new()));
-
-        create_fifo_dir(&mock, &test_config()).unwrap();
-
-        let inv = mock.invocations();
-        assert_eq!(inv.len(), 1);
-        match &inv[0] {
-            Invocation::Ssh { command, .. } => {
-                assert!(command.contains("mkdir -p"));
-                assert!(command.contains(".fifos"));
-            }
-            _ => panic!("expected Ssh"),
-        }
-    }
-
-    #[test]
-    fn logs_dir_created() {
-        let mock = MockRunner::new();
-        mock.add_response(MockResponse::Ok(String::new()));
-
-        create_logs_dir(&mock, &test_config()).unwrap();
-
-        let inv = mock.invocations();
-        assert_eq!(inv.len(), 1);
-        match &inv[0] {
-            Invocation::Ssh { command, .. } => {
-                assert!(command.contains("mkdir -p"));
-                assert!(command.contains(".logs"));
-            }
-            _ => panic!("expected Ssh"),
-        }
-    }
-
-    #[test]
     fn full_run_issues_all_steps() {
         let mock = MockRunner::new();
         // 1. APT
@@ -325,20 +230,12 @@ apt_packages = ["libssl-dev", "pkg-config"]
         mock.add_response(MockResponse::Ok("claude".into()));
         // 4. auth check -> authenticated
         mock.add_response(MockResponse::Ok("ok".into()));
-        // 5. hook: mkdir .bin
-        mock.add_response(MockResponse::Ok(String::new()));
-        // 5. hook: write script
-        mock.add_response(MockResponse::Ok(String::new()));
-        // 6. mkdir .fifos
-        mock.add_response(MockResponse::Ok(String::new()));
-        // 7. mkdir .logs
-        mock.add_response(MockResponse::Ok(String::new()));
 
         run(&mock, &test_config()).unwrap();
 
         let inv = mock.invocations();
-        // APT(1) + rustup check(1) + claude check(1) + auth check(1) + hook(2) + fifos(1) + logs(1) = 8
-        assert_eq!(inv.len(), 8);
+        // APT(1) + rustup check(1) + claude check(1) + auth check(1) = 4
+        assert_eq!(inv.len(), 4);
 
         // All commands go to the right remote
         for i in &inv {

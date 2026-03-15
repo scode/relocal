@@ -65,7 +65,7 @@ pub enum Command {
     /// List all sessions on the remote.
     List,
 
-    /// Remove a session's remote working copy and FIFOs.
+    /// Remove a session's remote working copy.
     Destroy {
         /// Session name (defaults to directory name).
         session_name: Option<String>,

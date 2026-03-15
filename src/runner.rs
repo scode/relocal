@@ -1,6 +1,6 @@
 //! Trait abstraction for executing external commands (ssh, rsync, local processes).
 //!
-//! All orchestration code (sidecar, `start`, `install`, `sync`) uses
+//! All orchestration code (sync loop, `claude`, `install`, `sync`) uses
 //! [`CommandRunner`] rather than calling `std::process::Command` directly.
 //! This enables unit-testing command sequences with a mock implementation
 //! that records invocations and returns canned results, without needing
@@ -14,6 +14,18 @@ use shell_quote::{Bash, QuoteRefExt};
 
 use crate::error::{Error, Result};
 use crate::rsync::{Direction, RsyncParams};
+
+/// Builds an rsync `-e` value for SSH ControlMaster args.
+///
+/// The args are `-o Key=Value` pairs with no shell metacharacters, so they
+/// are joined directly. (Using shell_quote here would produce `$'...'`
+/// ANSI-C quoting which rsync misinterprets as a variable reference.)
+fn build_rsync_ssh_command(ssh_extra_args: &[String]) -> String {
+    if ssh_extra_args.is_empty() {
+        return "ssh".to_string();
+    }
+    format!("ssh {}", ssh_extra_args.join(" "))
+}
 
 /// Output captured from a non-interactive command.
 #[derive(Debug)]
@@ -39,10 +51,12 @@ pub trait CommandRunner {
 
 /// Production implementation that shells out via `std::process::Command`.
 ///
-/// Tests can override the SSH client path to force transport-level behavior
-/// through the real process-spawning path without mutating global environment.
+/// When a ControlMaster socket is configured, all SSH and rsync commands
+/// reuse that persistent connection.
 pub struct ProcessRunner {
     ssh: OsString,
+    /// Extra args injected into all SSH invocations (e.g., ControlPath options).
+    ssh_extra_args: Vec<String>,
 }
 
 impl ProcessRunner {
@@ -50,6 +64,7 @@ impl ProcessRunner {
     pub fn new() -> Self {
         Self {
             ssh: OsString::from("ssh"),
+            ssh_extra_args: Vec::new(),
         }
     }
 
@@ -59,7 +74,23 @@ impl ProcessRunner {
     /// transport-failure tests deterministic without leaking configuration into
     /// unrelated code running in the same process.
     pub fn with_ssh_program(ssh: impl Into<OsString>) -> Self {
-        Self { ssh: ssh.into() }
+        Self {
+            ssh: ssh.into(),
+            ssh_extra_args: Vec::new(),
+        }
+    }
+
+    /// Creates a runner that routes all SSH/rsync through a ControlMaster socket.
+    pub fn with_control_path(socket_path: &Path) -> Self {
+        Self {
+            ssh: OsString::from("ssh"),
+            ssh_extra_args: vec![
+                "-o".to_string(),
+                format!("ControlPath={}", socket_path.display()),
+                "-o".to_string(),
+                "ControlMaster=auto".to_string(),
+            ],
+        }
     }
 }
 
@@ -110,7 +141,10 @@ fn validate_local_pull_target(local_path: &Path) -> Result<()> {
 impl CommandRunner for ProcessRunner {
     fn run_ssh(&self, remote: &str, command: &str) -> Result<CommandOutput> {
         let wrapped = login_shell_wrap(command);
-        let output = Command::new(&self.ssh).args([remote, &wrapped]).output()?;
+        let output = Command::new(&self.ssh)
+            .args(&self.ssh_extra_args)
+            .args([remote, &wrapped])
+            .output()?;
         Ok(CommandOutput {
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
@@ -121,6 +155,7 @@ impl CommandRunner for ProcessRunner {
     fn run_ssh_interactive(&self, remote: &str, command: &str) -> Result<ExitStatus> {
         let wrapped = login_shell_wrap(command);
         let status = Command::new(&self.ssh)
+            .args(&self.ssh_extra_args)
             .args(["-t", remote, &wrapped])
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
@@ -133,7 +168,17 @@ impl CommandRunner for ProcessRunner {
         if params.direction() == Direction::Pull {
             validate_local_pull_target(params.local_path())?;
         }
-        let output = Command::new("rsync").args(params.args()).output()?;
+        let mut cmd = Command::new("rsync");
+        // Inject SSH options for ControlMaster when configured.
+        // Safe to join without shell quoting because ssh_extra_args are only
+        // set by with_control_path(), which produces `-o Key=Value` pairs
+        // with no spaces or shell metacharacters in the values (the socket
+        // path is a short hash-based name we control).
+        if !self.ssh_extra_args.is_empty() {
+            let ssh_cmd = build_rsync_ssh_command(&self.ssh_extra_args);
+            cmd.args(["-e", &ssh_cmd]);
+        }
+        let output = cmd.args(params.args()).output()?;
         Ok(CommandOutput {
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
@@ -280,5 +325,59 @@ mod tests {
         let out = runner.run_ssh("user@host", "echo hi").unwrap();
         assert!(!out.status.success());
         assert!(out.stderr.contains("injected failure from runner test"));
+    }
+
+    #[test]
+    fn with_control_path_sets_extra_args() {
+        let runner = ProcessRunner::with_control_path(Path::new("/tmp/test.sock"));
+        assert_eq!(runner.ssh_extra_args.len(), 4);
+        assert!(runner
+            .ssh_extra_args
+            .contains(&"ControlPath=/tmp/test.sock".to_string()));
+        assert!(runner
+            .ssh_extra_args
+            .contains(&"ControlMaster=auto".to_string()));
+    }
+
+    #[test]
+    fn build_rsync_ssh_command_no_args() {
+        let cmd = build_rsync_ssh_command(&[]);
+        assert_eq!(cmd, "ssh");
+    }
+
+    #[test]
+    fn build_rsync_ssh_command_typical_control_path() {
+        let args = vec![
+            "-o".to_string(),
+            "ControlPath=/var/folders/f7/abc/T/rlc-test-12345678".to_string(),
+            "-o".to_string(),
+            "ControlMaster=auto".to_string(),
+        ];
+        let cmd = build_rsync_ssh_command(&args);
+        // Must produce plain args, no $'...' quoting that rsync misinterprets
+        assert_eq!(
+            cmd,
+            "ssh -o ControlPath=/var/folders/f7/abc/T/rlc-test-12345678 -o ControlMaster=auto"
+        );
+    }
+
+    #[test]
+    fn build_rsync_ssh_command_no_ansi_c_quoting() {
+        // Regression: shell_quote's $'...' ANSI-C quoting causes rsync to
+        // misinterpret `-o $'ControlPath=...'` as a shell variable reference,
+        // producing "Bad configuration option: $controlpath".
+        let args = vec![
+            "-o".to_string(),
+            "ControlPath=/tmp/rlc-test-abcd1234".to_string(),
+        ];
+        let cmd = build_rsync_ssh_command(&args);
+        assert!(
+            !cmd.contains("$'"),
+            "must not use ANSI-C quoting ($'...'), got: {cmd}"
+        );
+        assert!(
+            !cmd.contains("$\""),
+            "must not use dollar-quoting ($\"...\"), got: {cmd}"
+        );
     }
 }

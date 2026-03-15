@@ -3,13 +3,14 @@
 ## Overview
 
 `relocal` is a CLI tool that lets developers run Claude Code unsandboxed on a
-remote Linux box while maintaining a seamless local workflow. The local repo is
-synchronized bidirectionally with a remote working copy via rsync. Claude hooks
-on the remote trigger syncs so that local state stays current.
+remote Linux box while keeping a local copy of the repo current. The local repo
+is pushed to the remote at session start, and a background loop continuously
+pulls Claude's changes back to local while the session runs.
 
-The user interacts with their repo locally using authenticated tools (git,
-Graphite, GitHub CLI, etc.) and offloads Claude Code execution to a remote
-machine where it can run without restrictions.
+The user reviews Claude's output locally using authenticated tools (git,
+Graphite, GitHub CLI, etc.) while Claude Code runs on a remote machine without
+restrictions. Local edits made during an active session are **not** synced to
+the remote — use `relocal sync push` between sessions to send local changes.
 
 Distribution and installation of the `relocal` binary itself (e.g., via
 `cargo install` or binary releases) is out of scope of this spec.
@@ -63,8 +64,8 @@ rejected with an error.
 ## Concurrent Sessions
 
 Multiple sessions can run simultaneously — different repos to the same remote,
-or the same repo with different session names. The per-session FIFO naming
-ensures no interference between sessions.
+or the same repo with different session names. Each session has its own remote
+directory and independent background sync loop.
 
 ## CLI Commands
 
@@ -112,64 +113,44 @@ remote (or re-run to update). Performs the following steps in order:
    API key and subscription-based auth). Since the SSH session has a terminal
    attached, the interactive login works as normal.
 
-5. **Hook helper script**: Installs `~/relocal/.bin/relocal-hook.sh` (see
-   [Hook Mechanism](#hook-mechanism) for details). Always overwritten on
-   re-runs to ensure the latest version is deployed.
-
-6. **FIFO directory**: Creates `~/relocal/.fifos/` for the sync signaling
-   mechanism.
-
-7. **Logs directory**: Creates `~/relocal/.logs/` for hook invocation logs
-   (see [Hook Logging](#hook-logging)).
-
 All steps are idempotent — re-running `relocal remote install` is safe.
 
 ### `relocal claude [session-name]`
 
 Main command. Syncs the repo to the remote and launches an interactive Claude
-session.
-
-**Stale session detection**: Before proceeding, checks whether FIFOs already
-exist for this session name. If they do, assumes a previous session is still
-running or crashed. Prints an error telling the user to either wait for the
-existing session to finish, or run `relocal destroy <session-name>` if the
-previous session crashed. Does not proceed.
+session with continuous background synchronization.
 
 Steps:
 
 1. Read `relocal.toml` from the repo root. Fail if not found.
 2. Validate the session name (see [Session Naming](#session-naming)).
-3. Check for stale FIFOs (see above). Fail if found.
+3. Establish an SSH ControlMaster connection (see
+   [SSH Connection Sharing](#ssh-connection-sharing)). All subsequent SSH and
+   rsync commands in this session reuse this connection.
 4. Check that Claude Code is installed on the remote. Fail with a message
    suggesting `relocal remote install` if not found.
 5. Create the remote working directory `~/relocal/<session-name>/` if it does
    not exist.
-6. Create session-specific FIFOs on the remote (see [Sync Sidecar](#sync-sidecar)):
-   - `~/relocal/.fifos/<session-name>-request`
-   - `~/relocal/.fifos/<session-name>-ack`
-7. Perform an initial sync: local → remote (push).
-8. Install Claude project-level hooks in the remote working copy's
-   `.claude/settings.json` (see [Hook Mechanism](#hook-mechanism)).
-9. Start the sync sidecar (local background process, see
-   [Sync Sidecar](#sync-sidecar)).
-10. Open an interactive SSH session (`ssh -t`) to the remote host, `cd` into the
-    working directory, and exec `claude --dangerously-skip-permissions`.
-11. When the SSH session ends (Claude exits or user quits):
-    - Shut down the sync sidecar.
-    - Clean up the remote FIFOs.
-    - Print a summary (session name, remote path, reminder about `sync pull`).
+6. Perform an initial sync: local → remote (push).
+7. Start the background sync loop (see
+   [Background Sync Loop](#background-sync-loop)).
+8. Open an interactive SSH session (`ssh -t`) to the remote host, `cd` into the
+   working directory, and exec `claude --dangerously-skip-permissions`.
+9. When the SSH session ends (Claude exits or user quits):
+   - Shut down the background sync loop.
+   - If Claude exited cleanly (exit code 0), perform a final sync:
+     remote → local (pull).
+   - Tear down the ControlMaster connection.
+   - Print a summary (session name, remote path, reminder about `sync pull`).
 
 **Signal handling**: `SIGINT` (Ctrl+C) is naturally forwarded to the remote
 Claude process by the SSH terminal session. When the SSH session exits (whether
 from Claude exiting, user quitting, or signal), `relocal` proceeds with
-cleanup: the sidecar is shut down and FIFOs are removed. The sidecar is
-terminated by the main process (e.g., via thread join or process signal) — it
-does not need to independently detect the session end.
+cleanup: the background sync is shut down and the ControlMaster is torn down.
 
 If the SSH session drops unexpectedly (network failure, laptop sleep):
 - The main process detects the SSH child process exiting with an error.
-- The sidecar is shut down.
-- FIFOs are cleaned up on a best-effort basis (may fail if network is down).
+- The background sync loop is shut down.
 - `relocal` prints a message informing the user that the session was
   interrupted, that there may be unsynchronized work on the remote, and that
   they should use `relocal sync pull` or `relocal sync push` as appropriate to
@@ -178,17 +159,19 @@ If the SSH session drops unexpectedly (network failure, laptop sleep):
 
 ### `relocal sync push [session-name]`
 
-Manual sync: local → remote. Uses the same rsync invocation as the sidecar.
+Manual sync: local → remote. Uses the same rsync invocation as the background
+sync loop.
 
 ### `relocal sync pull [session-name]`
 
-Manual sync: remote → local. Uses the same rsync invocation as the sidecar.
+Manual sync: remote → local. Uses the same rsync invocation as the background
+sync loop.
 
 **Safety gate**: Before running rsync, verifies the remote session directory is a
 valid git repository by running `git fsck --strict --full --no-dangling` over
 SSH. If the check fails (remote was destroyed, emptied, corrupted, or is not a
 git repo), the pull is refused. This prevents `rsync --delete` from wiping the
-local working tree. This check also applies to sidecar-triggered pulls.
+local working tree. This check also applies to background-sync-triggered pulls.
 
 ### `relocal status [session-name]`
 
@@ -198,27 +181,24 @@ Shows information about the current session:
 - Remote working directory path
 - Whether the remote working directory exists
 - Whether Claude is installed on the remote
-- Whether FIFOs exist (session appears active)
 
 ### `relocal list`
 
 Lists all sessions on the configured remote by listing directories under
-`~/relocal/` (excluding `.bin/`, `.fifos/`, and `.logs/`).
+`~/relocal/`.
 
 Shows each session name and the size of its working copy.
 
 ### `relocal destroy [session-name]`
 
-Removes the remote working copy `~/relocal/<session-name>/` and any associated
-FIFOs.
+Removes the remote working copy `~/relocal/<session-name>/`.
 
 Prompts for confirmation before deleting.
 
 ### `relocal remote nuke`
 
-Deletes the entire `~/relocal/` directory on the remote, including all sessions,
-FIFOs, and the hook helper script. Does **not** uninstall APT packages, Rust,
-or Claude Code.
+Deletes the entire `~/relocal/` directory on the remote, including all sessions.
+Does **not** uninstall APT packages, Rust, or Claude Code.
 
 This is a development/upgrade escape hatch — intended for when developing or
 upgrading relocal itself and you want a clean slate to re-run
@@ -247,23 +227,20 @@ Key behaviors:
 - `--filter=':- .gitignore'`: respects `.gitignore` files at every level of the
   tree to avoid syncing build artifacts, platform-specific binaries, etc.
 - `.git/` **is synced** — the remote has full git history.
-- `.claude/` is **excluded** — managed separately via SSH (see below).
+- `.claude/` is **excluded** — the remote manages its own `.claude/` directory
+  independently. This prevents the background sync from overwriting remote
+  Claude state (MCP configs, settings, etc.) with local versions that may
+  differ.
 - Additional exclusions from `relocal.toml`'s `exclude` array are appended as
   `--exclude=<pattern>` flags.
 
 ### `.claude/` Directory Handling
 
-The `.claude/` directory is **excluded entirely** from rsync in both
-directions. Hook configuration on the remote is managed separately via SSH (see
-[Hook Mechanism](#hook-mechanism)), not through rsync.
-
-This avoids a race condition: if rsync overwrote the remote's
-`.claude/settings.json` (removing hooks) and then re-injected them, Claude Code
-could observe the intermediate state where hooks are missing, causing hook
-events like `Stop` to stop firing for the rest of the session.
+The `.claude/` directory is **excluded entirely** from rsync in both directions.
+The remote Claude session manages its own `.claude/` directory independently.
 
 See [Future Improvements](#future-improvements) for plans to selectively sync
-`.claude/` subdirectories (skills, commands, plugins) without this problem.
+`.claude/` subdirectories (skills, commands, plugins).
 
 ### Direction
 
@@ -274,121 +251,62 @@ See [Future Improvements](#future-improvements) for plans to selectively sync
 
 ### Conflict Handling
 
-rsync uses last-write-wins. If the user edits a file locally while Claude edits
-the same file remotely, whichever sync runs last will overwrite the other's
-changes. See [Future Improvements](#future-improvements).
+During an active session, sync is one-directional: remote → local only. Local
+edits made while Claude is running will be overwritten by the next background
+pull. To send local changes to the remote, end the session and run
+`relocal sync push` before starting a new one.
 
-## Hook Mechanism
+See [Future Improvements](#future-improvements) for plans to support
+bidirectional sync during sessions.
 
-Claude project-level hooks are installed in the remote working copy at
-`.claude/settings.json` within the `hooks` key.
+## SSH Connection Sharing
 
-Two hooks are configured:
+All SSH and rsync commands during a `relocal claude` session share a single
+persistent SSH connection via OpenSSH's ControlMaster feature. This avoids the
+overhead of establishing a new TCP+SSH handshake for every command.
 
-### `UserPromptSubmit` (sync local → remote)
+### ControlMaster Setup
 
-Fires when the user submits a prompt, before Claude begins processing. The hook
-runs the helper script which triggers a push sync (local → remote) so that
-Claude works on the latest local state.
+At the start of a `relocal claude` session, a ControlMaster is established:
 
-### `Stop` (sync remote → local)
-
-Fires when Claude finishes a response. The hook runs the helper script which
-triggers a pull sync (remote → local) so the user sees Claude's changes
-locally.
-
-### Hook Helper Script
-
-Installed at `~/relocal/.bin/relocal-hook.sh` on the remote.
-
-```bash
-#!/bin/bash
-set -euo pipefail
+```
+ssh -o ControlMaster=yes -o ControlPath=<socket> -o ControlPersist=300 -N -f <remote>
 ```
 
-Accepts a single argument: the sync direction (`push` or `pull`).
+- `-N`: no remote command (just holds the connection open)
+- `-f`: backgrounds after connecting
+- The socket path is `$TMPDIR/rlc-<prefix>-<hash>` where prefix is up to 20
+  characters of the session name and hash is an 8-hex-digit digest of
+  session+PID. The fixed-length filename avoids exceeding the 104-byte Unix
+  socket path limit on macOS.
 
-Behavior:
-1. Write the direction (`push` or `pull`) to the session's request FIFO.
-   This blocks until the sidecar reads it.
-2. Read from the session's ack FIFO. This blocks until the sidecar writes a
-   response.
-3. If the ack is `ok`, exit 0 (Claude proceeds).
-4. If the ack is `error:<message>`, write the error to stderr and exit 1
-   (Claude is blocked from proceeding).
+### ControlMaster Teardown
 
-The script receives the session name via an environment variable
-(`RELOCAL_SESSION`) set in the hook configuration.
+On session end (clean or dirty), the ControlMaster is torn down:
 
-### Hook Configuration
-
-The `.claude/settings.json` in the remote working copy will contain:
-
-```json
-{
-  "hooks": {
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "RELOCAL_SESSION=<session-name> ~/relocal/.bin/relocal-hook.sh push"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "RELOCAL_SESSION=<session-name> ~/relocal/.bin/relocal-hook.sh pull"
-          }
-        ]
-      }
-    ]
-  }
-}
+```
+ssh -O exit -o ControlPath=<socket> <remote>
 ```
 
-### Hook Merging Strategy
+The teardown is implemented via a `Drop` trait to ensure cleanup even on panic.
 
-The hook installation must handle existing `.claude/settings.json` content:
+### Connection Injection
 
-- If the file does not exist, create it with the hook configuration.
-- If the file exists but has no `hooks` key, add the `hooks` key.
-- If `hooks` exists but has no `UserPromptSubmit` or `Stop` arrays, add them.
-- If the arrays exist, check for existing relocal matcher groups. Relocal
-  matcher groups are identified by the presence of `relocal-hook.sh` in any
-  command string within the group's `hooks` array.
-  - If a relocal matcher group exists, update it in place (to handle session
-    name or script path changes).
-  - If no relocal matcher group exists, append a new one to the array.
+All `ProcessRunner` commands inject `-o ControlPath=<socket>
+-o ControlMaster=auto` into their SSH invocations:
 
-This ensures user-defined hooks in the same arrays are preserved, and repeated
-runs of `relocal claude` or `relocal sync push` do not duplicate entries.
+- `run_ssh`: extra args before the remote host argument
+- `run_ssh_interactive`: extra args before `-t`
+- `run_rsync`: via `-e "ssh -o ControlPath=<socket> -o ControlMaster=auto"`
+  added to the rsync argument list
 
-### Hook Logging
+This is transparent to higher-level code — the `CommandRunner` trait interface
+is unchanged.
 
-Each hook invocation writes a timestamped log file to `~/relocal/.logs/` on the
-remote. The log file is named `<session>-<direction>.log` (e.g.,
-`my-session-push.log`) and is overwritten on each invocation of that
-session/direction pair, so it always contains the most recent run.
+## Background Sync Loop
 
-The script opens a dedicated file descriptor (FD 3) for log output to keep
-stdout and stderr clean for Claude. Key events logged:
-
-- Hook start (direction and session name)
-- Request sent to FIFO
-- Ack received (with result: ok or error message)
-
-This provides visibility into hook execution for debugging without interfering
-with Claude's hook output parsing.
-
-## Sync Sidecar
-
-The sidecar is a local background process managed by `relocal claude`. It
-mediates all syncs triggered by remote hooks.
+The background sync loop replaces the previous hook-triggered sidecar. It runs
+as a local background thread managed by `relocal claude`.
 
 ### Architecture
 
@@ -396,59 +314,49 @@ mediates all syncs triggered by remote hooks.
  LOCAL                          REMOTE
 ┌─────────────┐    SSH #1     ┌──────────────────────┐
 │ relocal     │───(ssh -t)───→│ claude session       │
-│ start       │               │                      │
-│             │    SSH #2     │  hook fires →        │
-│ sidecar  ←──│───(cat fifo)──│  writes to req fifo  │
-│  │          │               │  blocks on ack fifo  │
-│  ├─ rsync ──│───(ssh)──────→│                      │
-│  │          │    SSH #3     │                      │
-│  └─ ack  ───│───(echo>fifo)→│  reads ack, exits    │
+│             │               │                      │
+│ sync loop   │    rsync      │                      │
+│  └─ pull ───│──────────────→│  (every ~3 seconds)  │
+│             │               │                      │
 └─────────────┘               └──────────────────────┘
+         (all via ControlMaster)
 ```
 
-1. The sidecar opens an SSH connection to the remote, reading from the request
-   FIFO: `ssh user@host "cat ~/relocal/.fifos/<session>-request"`.
-   Each time the hook writes a line, the sidecar receives it.
+The loop thread uses `mpsc::recv_timeout` on a shutdown channel. Each iteration:
 
-   **Implementation note**: A FIFO will deliver EOF to the reader once all
-   writers close it. Since each hook invocation opens the FIFO, writes, and
-   closes it, the `cat` command will exit after each request. The
-   implementation must account for this — e.g., by wrapping the read in a
-   loop (`while true; do cat <fifo>; done` on the remote, or by reopening
-   the SSH read connection after each request on the local side).
+1. Wait up to N seconds (currently 3) for a shutdown signal.
+2. If shutdown received (or sender dropped): exit the loop.
+3. Otherwise (timeout): run `sync_pull` (remote → local).
+4. If the pull fails, log a warning and continue — transient rsync failures
+   should not kill the session.
 
-2. On receiving a request (`push` or `pull`):
-   a. Run the appropriate rsync command **locally**.
-   b. On success: write `ok` to the ack FIFO via
-      `ssh user@host "echo ok > ~/relocal/.fifos/<session>-ack"`.
-   c. On failure: write `error:<message>` to the ack FIFO via
-      `ssh user@host "echo 'error:<message>' > ~/relocal/.fifos/<session>-ack"`.
+### Shutdown
 
-3. The hook script on the remote blocks on the ack FIFO read, receives the
-   result, and either lets Claude proceed or blocks with an error.
+The main thread shuts down the sync loop by dropping the channel sender, which
+causes `recv_timeout` to return immediately. The main thread then joins the
+background thread. This gives sub-millisecond shutdown latency (no need to
+wait for a sleep cycle).
 
-4. When the main SSH session (claude) ends, the main `relocal` process
-   terminates the sidecar thread/process and cleans up FIFOs.
+### Trade-offs
 
-### FIFO Lifecycle
-
-- Created by `relocal claude` before launching Claude.
-- Removed by `relocal claude` on clean shutdown.
-- On dirty shutdown (network drop), FIFOs may be left behind. `relocal claude`
-  checks for existing FIFOs and refuses to start if they exist (see
-  [Stale session detection](#relocal-start-session-name)).
+The polling approach is less efficient than hook-triggered syncs — it runs rsync
+even when nothing has changed. However:
+- rsync with no changes is cheap (just stat comparisons, no data transfer).
+- It eliminates all hook machinery, FIFO management, and remote helper scripts.
+- It works with any remote agent (Claude, Codex, etc.) with zero integration.
 
 ## Error Handling
 
-- **rsync failure during hook**: The hook script receives an error ack and exits
-  non-zero. Claude is blocked from proceeding. The error is printed to stderr
-  which will be visible in the Claude session.
+- **Background sync failure**: If a pull fails during the background loop (e.g.,
+  transient network issue), the error is logged as a warning and the loop
+  continues. The session is not interrupted.
 - **SSH connection drop**: The main process detects the SSH child process exit,
-  terminates the sidecar, attempts FIFO cleanup, and prints a warning with
-  recovery instructions (use `relocal sync push`/`pull`).
+  shuts down the background sync, tears down the ControlMaster (best-effort),
+  and prints a warning with recovery instructions (use `relocal sync
+  push`/`pull`).
 - **Pull safety — remote validation**: Before any remote→local sync (manual or
-  sidecar-triggered), `git fsck --strict --full --no-dangling` is run on the
-  remote session directory. If it fails, the pull is refused to prevent
+  background-loop-triggered), `git fsck --strict --full --no-dangling` is run on
+  the remote session directory. If it fails, the pull is refused to prevent
   `rsync --delete` from wiping the local tree.
 - **Pull safety — local destination validation**: The command runner validates
   the local pull target before invoking rsync. It canonicalizes the path and
@@ -463,8 +371,6 @@ mediates all syncs triggered by remote hooks.
   not fail). `destroy` fails with a message that the session was not found.
 - **Claude not installed on remote**: `claude` fails with a message suggesting
   `relocal remote install`.
-- **Stale FIFOs on start**: `claude` refuses to proceed and instructs the user
-  to check for an existing session or run `relocal destroy`.
 
 ## Implementation
 
@@ -475,8 +381,8 @@ mediates all syncs triggered by remote hooks.
 - Configuration: `toml` crate for parsing `relocal.toml`
 - Logging: `tracing` crate. Default level WARN. `-v` gives INFO, `-vv` gives
   DEBUG, `-vvv` gives TRACE.
-- No async runtime needed — the sidecar can use threads (one for reading the
-  request FIFO, main thread for running rsync and writing acks)
+- No async runtime needed — the background sync loop uses a single thread with
+  `mpsc::recv_timeout` for clean shutdown.
 
 ## Output and UX
 
@@ -491,15 +397,14 @@ mediates all syncs triggered by remote hooks.
 Code and design choices should favor testability. Specifically:
 
 - **Pure logic in isolated modules**: Config parsing, session name validation,
-  rsync argument construction, hook JSON merging, and hook script content
-  generation must be pure functions with no I/O dependencies. These are the
-  primary unit test surface.
+  and rsync argument construction must be pure functions with no I/O
+  dependencies. These are the primary unit test surface.
 
 - **Trait abstraction for command execution**: A `CommandRunner` trait (or
   equivalent) abstracts shelling out to `ssh`, `rsync`, and other external
   commands. The production implementation uses `std::process::Command`. Test
   implementations record invocations and return configured results. This allows
-  orchestration logic (sidecar, `start`, `install`) to be tested without real
+  orchestration logic (sync loop, `claude`, `install`) to be tested without real
   SSH.
 
 - **Function signatures that enable testing**:
@@ -510,8 +415,6 @@ Code and design choices should favor testability. Specifically:
   - rsync argument construction: `(&Config, Direction, &str)` →
     `RsyncParams` (carries the argument list plus `direction` and `local_path`
     metadata used by the command runner for safety validation)
-  - Hook JSON merging: `(Option<serde_json::Value>, &str)` →
-    `serde_json::Value`
 
 ## Testing
 
@@ -556,20 +459,6 @@ remote host.
 - Source and destination paths are correct for push vs. pull.
 - Verbose mode (`-v`+) adds `--progress` to rsync.
 
-#### Hook JSON Merging
-
-- No existing file → complete `settings.json` with hooks.
-- Existing file with no `hooks` key → `hooks` key added, all other keys
-  preserved.
-- Existing `hooks` with no `UserPromptSubmit`/`Stop` → arrays added.
-- Existing arrays with no relocal matcher group → relocal matcher group appended.
-- Existing arrays with a relocal matcher group → matcher group updated in place.
-- User-defined hooks in the same arrays are preserved and not reordered.
-- Other top-level keys in `settings.json` are preserved.
-- Session name is correctly interpolated into hook commands.
-- Re-running merge with the same session produces identical output
-  (idempotent).
-
 #### CLI Argument Parsing
 
 - Each subcommand parses correctly with required and optional arguments.
@@ -579,7 +468,7 @@ remote host.
 
 ### Integration Tests
 
-Integration tests exercise real SSH, rsync, FIFOs, and filesystem operations.
+Integration tests exercise real SSH, rsync, and filesystem operations.
 
 **Prerequisites**: Integration tests require SSH access to a configured remote
 host. The remote may be the local machine (e.g., `localhost`) — the test suite
@@ -612,47 +501,22 @@ remote session name, and cleans up both on completion (including on panic, via
 - `.gitignore`-matching files on remote are not pulled.
 - Pull from a non-git remote → refused with error (git fsck safety gate).
 
-#### Hook Injection
+#### Background Sync Loop
 
-- `setup` installs hooks into remote `.claude/settings.json`.
-- Hooks reference the correct session name.
-
-#### FIFO Lifecycle
-
-- `claude` creates both FIFOs on remote.
-- Clean shutdown removes both FIFOs.
-- Stale FIFO detection: pre-create FIFOs, verify `claude` refuses with error.
-
-#### Sidecar
-
-- Write `push` to request FIFO → sidecar runs rsync (local → remote), writes
-  `ok` to ack FIFO.
-- Write `pull` to request FIFO → sidecar runs rsync (remote → local), writes
-  `ok` to ack FIFO.
-- Simulate rsync failure (e.g., invalid remote path) → sidecar writes
-  `error:<message>` to ack FIFO.
-- Multiple sequential requests are handled correctly.
-- Sidecar terminates cleanly when signaled by main process.
-
-#### Hook Script (End-to-End)
-
-- Hook script writes to request FIFO and blocks on ack FIFO.
-- After `ok` written to ack FIFO, hook script exits 0.
-- After `error:msg` written to ack FIFO, hook script exits non-zero and
-  message appears on stderr.
+- Start background loop, create file on remote, wait for one poll cycle, verify
+  file appears locally.
+- Background loop continues after a transient sync failure.
+- Shutdown signal stops the loop promptly (within one poll cycle).
 
 #### Session Lifecycle
 
-- `claude` creates remote directory, FIFOs, performs initial push, installs
-  hooks.
-- On clean exit: FIFOs are removed, summary is printed.
-- `destroy` removes working directory and FIFOs.
+- `claude` creates remote directory, performs initial push.
+- On clean exit: final pull is performed, summary is printed.
+- `destroy` removes working directory.
 - `destroy` on non-existent session → error.
 
 #### `relocal remote install`
 
-- Installs hook helper script at `~/relocal/.bin/relocal-hook.sh`.
-- Creates `~/relocal/.fifos/` directory.
 - Idempotent: re-run does not fail or corrupt state.
 - APT/rustup/Claude install steps are tested only for the already-installed
   case (verifying idempotency without uninstalling).
@@ -661,13 +525,11 @@ remote session name, and cleans up both on completion (including on panic, via
 
 - No sessions → empty output.
 - Multiple sessions → all listed.
-- `.bin/`, `.fifos/`, and `.logs/` are excluded from listing.
 
 #### `relocal status`
 
 - Reports correct remote host and path.
 - Reports whether remote directory exists.
-- Reports whether FIFOs exist.
 
 #### `relocal remote nuke`
 
@@ -698,9 +560,6 @@ improvements:
 
 - **Conflict handling**: Replace last-write-wins with smarter merge or conflict
   detection (e.g., checksums before/after, user prompts on conflict).
-- **SSH connection multiplexing**: Use `ControlMaster`/`ControlPath` to reuse a
-  single SSH connection for the sidecar, ack writes, and rsync, reducing
-  connection overhead.
 - **OS support beyond Ubuntu**: Currently assumes Ubuntu and APT. Future versions
   should support other Linux distributions and package managers.
 - **Sync exclusion of `.git/`**: Evaluate whether syncing only git-tracked
@@ -710,10 +569,9 @@ improvements:
   after a network drop, rather than requiring a fresh start.
 - **Automatic reconnection**: Retry SSH on transient network failures.
 - **`.claude/` directory syncing**: The entire `.claude/` directory is currently
-  excluded from rsync because including it causes a race condition: rsync
-  overwrites the remote `settings.json` (removing hooks), and even though hooks
-  are re-injected immediately after, Claude Code may observe the intermediate
-  hookless state and stop firing hook events like `Stop`. A future version
-  should sync `.claude/` subdirectories (skills, commands, plugins) while
-  keeping `settings.json` managed exclusively via SSH.
+  excluded from rsync. A future version should selectively sync `.claude/`
+  subdirectories (skills, commands, plugins) while keeping settings and MCP
+  configs managed independently per side.
 - **Colored output**: Add color support for better UX.
+- **Efficient sync**: Replace polling with file-watching (e.g., inotify/fsevents)
+  on the remote to only sync when files actually change.

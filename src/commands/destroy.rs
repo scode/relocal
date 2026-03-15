@@ -1,7 +1,7 @@
 //! `relocal destroy [session-name]` — removes a session's remote state.
 //!
-//! Deletes the remote working directory and associated FIFOs after prompting
-//! for confirmation. Uses the [`CommandRunner`] trait for all SSH operations.
+//! Deletes the remote working directory after prompting for confirmation.
+//! Uses the [`CommandRunner`] trait for all SSH operations.
 
 use tracing::info;
 
@@ -10,7 +10,7 @@ use crate::error::{Error, Result};
 use crate::runner::CommandRunner;
 use crate::ssh;
 
-/// Removes a session's remote working directory and FIFOs.
+/// Removes a session's remote working directory.
 ///
 /// If `confirm` is true, prompts the user for confirmation before proceeding.
 /// Pass `false` in tests to skip the interactive prompt.
@@ -22,19 +22,16 @@ pub fn run(
 ) -> Result<()> {
     // Check the session exists
     let dir_check = runner.run_ssh(&config.remote, &ssh::check_work_dir_exists(session_name))?;
-    let fifos_check = runner.run_ssh(&config.remote, &ssh::check_fifos_exist(session_name))?;
-    if !dir_check.status.success() && !fifos_check.status.success() {
+    if !dir_check.status.success() {
         return Err(Error::Remote {
             remote: config.remote.clone(),
-            message: format!(
-                "session '{session_name}' not found. No working directory or FIFOs exist."
-            ),
+            message: format!("session '{session_name}' not found. No working directory exists."),
         });
     }
 
     if confirm {
         let prompt = format!(
-            "Remove session '{session_name}' on {}? This deletes {} and its FIFOs.",
+            "Remove session '{session_name}' on {}? This deletes {}.",
             config.remote,
             ssh::remote_work_dir(session_name)
         );
@@ -53,8 +50,8 @@ pub fn run(
     info!("Removing remote working directory...");
     runner.run_ssh(&config.remote, &ssh::rm_work_dir(session_name))?;
 
-    info!("Removing FIFOs...");
-    runner.run_ssh(&config.remote, &ssh::remove_fifos(session_name))?;
+    info!("Removing lock file...");
+    runner.run_ssh(&config.remote, &ssh::remove_lock_file(session_name))?;
 
     eprintln!("Session '{session_name}' destroyed.");
     Ok(())
@@ -70,39 +67,35 @@ mod tests {
     }
 
     #[test]
-    fn removes_working_dir_and_fifos() {
+    fn removes_working_dir_and_lock() {
         let mock = MockRunner::new();
         // dir check -> exists
         mock.add_response(MockResponse::Ok(String::new()));
-        // fifos check -> exists
-        mock.add_response(MockResponse::Ok(String::new()));
         // rm work dir
         mock.add_response(MockResponse::Ok(String::new()));
-        // rm fifos
+        // rm lock file
         mock.add_response(MockResponse::Ok(String::new()));
 
         run(&mock, &test_config(), "my-session", false).unwrap();
 
         let inv = mock.invocations();
-        assert_eq!(inv.len(), 4);
+        assert_eq!(inv.len(), 3);
 
-        match &inv[2] {
+        match &inv[1] {
             Invocation::Ssh { remote, command } => {
                 assert_eq!(remote, "user@host");
                 assert!(command.contains("rm -rf"));
                 assert!(command.contains("my-session"));
             }
-            _ => panic!("expected Ssh"),
+            _ => panic!("expected Ssh for rm work dir"),
         }
 
-        match &inv[3] {
-            Invocation::Ssh { remote, command } => {
-                assert_eq!(remote, "user@host");
+        match &inv[2] {
+            Invocation::Ssh { command, .. } => {
                 assert!(command.contains("rm -f"));
-                assert!(command.contains("my-session-request"));
-                assert!(command.contains("my-session-ack"));
+                assert!(command.contains(".locks/my-session.lock"));
             }
-            _ => panic!("expected Ssh"),
+            _ => panic!("expected Ssh for rm lock"),
         }
     }
 
@@ -111,9 +104,9 @@ mod tests {
         let mock = MockRunner::new();
         // dir check -> exists
         mock.add_response(MockResponse::Ok(String::new()));
-        // fifos check -> exists
+        // rm work dir
         mock.add_response(MockResponse::Ok(String::new()));
-        mock.add_response(MockResponse::Ok(String::new()));
+        // rm lock file
         mock.add_response(MockResponse::Ok(String::new()));
 
         let config = Config::parse("remote = \"deploy@prod\"").unwrap();
@@ -132,8 +125,6 @@ mod tests {
     fn nonexistent_session_returns_error() {
         let mock = MockRunner::new();
         // dir check -> not found
-        mock.add_response(MockResponse::Fail(String::new()));
-        // fifos check -> not found
         mock.add_response(MockResponse::Fail(String::new()));
 
         let result = run(&mock, &test_config(), "no-such-session", false);
