@@ -50,6 +50,12 @@ pub enum Command {
         claude_args: Vec<String>,
     },
 
+    /// Open an interactive SSH shell in the remote session directory.
+    Ssh {
+        /// Session name (defaults to directory name).
+        session_name: Option<String>,
+    },
+
     /// Manually sync files between local and remote.
     Sync {
         #[command(subcommand)]
@@ -195,6 +201,23 @@ mod tests {
                 assert_eq!(claude_args, &["--debug", "--resume"]);
             }
             _ => panic!("expected Claude"),
+        }
+    }
+
+    #[test]
+    fn ssh_no_session() {
+        let cli = parse(&["relocal", "ssh"]);
+        assert!(matches!(cli.command, Command::Ssh { session_name: None }));
+    }
+
+    #[test]
+    fn ssh_with_session() {
+        let cli = parse(&["relocal", "ssh", "my-session"]);
+        match &cli.command {
+            Command::Ssh { session_name } => {
+                assert_eq!(session_name.as_deref(), Some("my-session"));
+            }
+            _ => panic!("expected Ssh"),
         }
     }
 
