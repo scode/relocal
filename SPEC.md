@@ -92,23 +92,26 @@ Writes the file and confirms.
 Installs the full environment on the remote host. Intended to be run once per
 remote (or re-run to update). Performs the following steps in order:
 
-1. **APT baseline packages**: Installs `build-essential`, `nodejs`, `npm`, plus
-   any packages listed in `relocal.toml`'s `apt_packages`.
+1. **APT baseline packages**: Installs `build-essential`, `git`, `nodejs`,
+   `npm`, plus any packages listed in `relocal.toml`'s `apt_packages`.
    ```
-   sudo apt-get update && sudo apt-get install -y build-essential nodejs npm <user-packages>
+   sudo apt-get update && sudo apt-get install -y build-essential git nodejs npm <user-packages>
    ```
 
-2. **Rust via rustup**: Installs stable Rust if `rustup` is not already present.
+2. **GitHub CLI**: Installs `gh` from the official APT repository if not already
+   on PATH.
+
+3. **Rust via rustup**: Installs stable Rust if `rustup` is not already present.
    ```
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
    ```
 
-3. **Claude Code**: Installs via npm if `claude` is not already on PATH.
+4. **Claude Code**: Installs via npm if `claude` is not already on PATH.
    ```
    npm install -g @anthropic-ai/claude-code
    ```
 
-4. **Claude authentication**: Runs `claude login` interactively if Claude is not
+5. **Claude authentication**: Runs `claude login` interactively if Claude is not
    already authenticated. The user follows the normal login flow (supports both
    API key and subscription-based auth). Since the SSH session has a terminal
    attached, the interactive login works as normal.

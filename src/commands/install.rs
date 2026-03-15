@@ -1,7 +1,7 @@
 //! `relocal remote install` — installs the full environment on the remote host.
 //!
-//! Performs four idempotent steps: APT packages, Rust, Claude Code, and Claude
-//! auth. Safe to re-run at any time.
+//! Performs five idempotent steps: APT packages, GitHub CLI, Rust, Claude Code,
+//! and Claude auth. Safe to re-run at any time.
 
 use tracing::info;
 
@@ -13,6 +13,7 @@ use crate::ssh;
 /// Runs all remote installation steps in order.
 pub fn run(runner: &dyn CommandRunner, config: &Config) -> Result<()> {
     install_apt_packages(runner, config)?;
+    install_github_cli(runner, config)?;
     install_rust(runner, config)?;
     install_claude_code(runner, config)?;
     authenticate_claude(runner, config)?;
@@ -25,6 +26,7 @@ fn install_apt_packages(runner: &dyn CommandRunner, config: &Config) -> Result<(
     info!("Installing APT packages...");
     let mut packages = vec![
         "build-essential".to_string(),
+        "git".to_string(),
         "nodejs".to_string(),
         "npm".to_string(),
     ];
@@ -33,6 +35,22 @@ fn install_apt_packages(runner: &dyn CommandRunner, config: &Config) -> Result<(
     let pkg_list = packages.join(" ");
     let cmd = format!("sudo apt-get update && sudo apt-get install -y {pkg_list}");
     runner.run_ssh(&config.remote, &cmd)?;
+    Ok(())
+}
+
+fn install_github_cli(runner: &dyn CommandRunner, config: &Config) -> Result<()> {
+    info!("Checking for GitHub CLI...");
+    let check = runner.run_ssh(&config.remote, "command -v gh")?;
+    if check.status.success() {
+        info!("GitHub CLI already installed, skipping.");
+        return Ok(());
+    }
+
+    info!("Installing GitHub CLI...");
+    runner.run_ssh(
+        &config.remote,
+        "curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && echo 'deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main' | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null && sudo apt-get update && sudo apt-get install -y gh",
+    )?;
     Ok(())
 }
 
@@ -98,6 +116,22 @@ apt_packages = ["libssl-dev", "pkg-config"]
     }
 
     #[test]
+    fn apt_packages_includes_git() {
+        let mock = MockRunner::new();
+        mock.add_response(MockResponse::Ok(String::new()));
+
+        install_apt_packages(&mock, &test_config()).unwrap();
+
+        let inv = mock.invocations();
+        match &inv[0] {
+            Invocation::Ssh { command, .. } => {
+                assert!(command.contains("git"));
+            }
+            _ => panic!("expected Ssh"),
+        }
+    }
+
+    #[test]
     fn apt_packages_includes_baseline_and_user_packages() {
         let mock = MockRunner::new();
         // APT install
@@ -115,6 +149,42 @@ apt_packages = ["libssl-dev", "pkg-config"]
                 assert!(command.contains("libssl-dev"));
                 assert!(command.contains("pkg-config"));
                 assert!(command.contains("sudo apt-get"));
+            }
+            _ => panic!("expected Ssh"),
+        }
+    }
+
+    #[test]
+    fn github_cli_skipped_when_present() {
+        let mock = MockRunner::new();
+        mock.add_response(MockResponse::Ok("/usr/bin/gh\n".into()));
+
+        install_github_cli(&mock, &test_config()).unwrap();
+
+        let inv = mock.invocations();
+        assert_eq!(inv.len(), 1);
+        match &inv[0] {
+            Invocation::Ssh { command, .. } => {
+                assert!(command.contains("command -v gh"));
+            }
+            _ => panic!("expected Ssh"),
+        }
+    }
+
+    #[test]
+    fn github_cli_installed_when_absent() {
+        let mock = MockRunner::new();
+        mock.add_response(MockResponse::Fail(String::new()));
+        mock.add_response(MockResponse::Ok(String::new()));
+
+        install_github_cli(&mock, &test_config()).unwrap();
+
+        let inv = mock.invocations();
+        assert_eq!(inv.len(), 2);
+        match &inv[1] {
+            Invocation::Ssh { command, .. } => {
+                assert!(command.contains("gh"));
+                assert!(command.contains("githubcli-archive-keyring"));
             }
             _ => panic!("expected Ssh"),
         }
@@ -224,18 +294,20 @@ apt_packages = ["libssl-dev", "pkg-config"]
         let mock = MockRunner::new();
         // 1. APT
         mock.add_response(MockResponse::Ok(String::new()));
-        // 2. rustup check -> present
+        // 2. gh check -> present
+        mock.add_response(MockResponse::Ok("gh".into()));
+        // 3. rustup check -> present
         mock.add_response(MockResponse::Ok("rustup".into()));
-        // 3. claude check -> present
+        // 4. claude check -> present
         mock.add_response(MockResponse::Ok("claude".into()));
-        // 4. auth check -> authenticated
+        // 5. auth check -> authenticated
         mock.add_response(MockResponse::Ok("ok".into()));
 
         run(&mock, &test_config()).unwrap();
 
         let inv = mock.invocations();
-        // APT(1) + rustup check(1) + claude check(1) + auth check(1) = 4
-        assert_eq!(inv.len(), 4);
+        // APT(1) + gh check(1) + rustup check(1) + claude check(1) + auth check(1) = 5
+        assert_eq!(inv.len(), 5);
 
         // All commands go to the right remote
         for i in &inv {
