@@ -2,62 +2,52 @@
 
 > **WARNING: EARLY PROTOTYPE — EXPECT BREAKING CHANGES.**
 >
-> relocal is under active development. Commands, config format, and sync
-> behavior may change without notice between commits. If you're using it,
-> watch the [changelog](https://github.com/scode/relocal/commits/main)
-> until this notice is removed.
+> relocal is under active development. Commands, config format, and sync behavior may change without notice between
+> commits. If you're using it, watch the [changelog](https://github.com/scode/relocal/commits/main) until this notice is
+> removed.
 >
-> Bugs or misconfiguration can delete local files. There are safety checks
-> but the tool has not been battle-tested.
+> Bugs or misconfiguration can delete local files. There are safety checks but the tool has not been battle-tested.
 
-relocal runs Claude Code on a remote Ubuntu host while keeping your local repo
-current with Claude's changes. Your code is pushed to the remote at session
-start, and a background loop continuously pulls remote changes back to local
-while Claude works. You can review Claude's output locally in your editor while
-it runs in your terminal. Local edits during a session are not synced to the
-remote — use `relocal sync push` between sessions to send local changes.
+relocal runs Claude Code on a remote Ubuntu host while keeping your local repo current with Claude's changes. Your code
+is pushed to the remote at session start, and a background loop continuously pulls remote changes back to local while
+Claude works. You can review Claude's output locally in your editor while it runs in your terminal. Local edits during a
+session are not synced to the remote — use `relocal sync push` between sessions to send local changes.
 
 ## Security Model and Host Exposure
 
-`relocal` runs Claude remotely with `--dangerously-skip-permissions` and syncs
-your repo with `rsync --delete`, including the entire `.git/` directory. Your
-code is pushed at session start, and a background loop continuously pulls
+`relocal` runs Claude remotely with `--dangerously-skip-permissions` and syncs your repo with `rsync --delete`,
+including the entire `.git/` directory. Your code is pushed at session start, and a background loop continuously pulls
 remote changes to local while the session runs.
 
 ### Caveats
 
-This design is intended to provide enough isolation to run Claude with
-`--dangerously-skip-permissions` in many setups, but there are real caveats and
-exposure paths you should treat as in-scope risk.
+This design is intended to provide enough isolation to run Claude with `--dangerously-skip-permissions` in many setups,
+but there are real caveats and exposure paths you should treat as in-scope risk.
 
-If your remote is `localhost` (or the same machine/account as your
-workstation), there is no real isolation. In that setup, remote execution is
-effectively local unsandboxed execution.
+If your remote is `localhost` (or the same machine/account as your workstation), there is no real isolation. In that
+setup, remote execution is effectively local unsandboxed execution.
 
-Because `.git/` is synced both directions, a compromised or misused remote can
-affect local host behavior after a pull. Important examples:
-- `.git/hooks/*` can be modified remotely and later execute locally when you
-  run Git commands.
-- `.git/config` can be modified remotely (for example `core.hooksPath`,
-  `sshCommand`, credential helpers, remotes, signing programs), which can
-  trigger local command execution or credential leakage.
-- Full Git metadata is exposed remotely: history, reflogs, stashes, and
-  unreachable objects may contain sensitive data you thought was removed.
-- `rsync --delete` over `.git/` can propagate ref/config/state tampering back
-  to local even when repository object integrity checks pass.
+Because `.git/` is synced both directions, a compromised or misused remote can affect local host behavior after a pull.
+Important examples:
 
-`git fsck` checks in relocal reduce accidental destructive pulls, but they do
-not make remote-sourced `.git` content trustworthy.
+- `.git/hooks/*` can be modified remotely and later execute locally when you run Git commands.
+- `.git/config` can be modified remotely (for example `core.hooksPath`, `sshCommand`, credential helpers, remotes,
+  signing programs), which can trigger local command execution or credential leakage.
+- Full Git metadata is exposed remotely: history, reflogs, stashes, and unreachable objects may contain sensitive data
+  you thought was removed.
+- `rsync --delete` over `.git/` can propagate ref/config/state tampering back to local even when repository object
+  integrity checks pass.
+
+`git fsck` checks in relocal reduce accidental destructive pulls, but they do not make remote-sourced `.git` content
+trustworthy.
 
 **Operational expectations:**
-- Treat the remote host as disposable sandbox infrastructure, not a trusted
-  long-lived environment.
-- Prefer a dedicated throwaway VM/user and a dedicated local clone for relocal
-  sessions.
-- Do not authenticate to external services from the remote sandbox (GitHub CLI,
-  cloud CLIs, package registries, databases, internal systems, etc.).
-- Claude authentication on the remote is the only expected exception needed for
-  relocal to function.
+
+- Treat the remote host as disposable sandbox infrastructure, not a trusted long-lived environment.
+- Prefer a dedicated throwaway VM/user and a dedicated local clone for relocal sessions.
+- Do not authenticate to external services from the remote sandbox (GitHub CLI, cloud CLIs, package registries,
+  databases, internal systems, etc.).
+- Claude authentication on the remote is the only expected exception needed for relocal to function.
 - Keep sensitive credentials and privileged operations on your local machine.
 - If credentials are entered on the remote, rotate/revoke them promptly.
 
@@ -66,11 +56,13 @@ not make remote-sourced `.git` content trustworthy.
 ### Prerequisites
 
 Local machine:
+
 - `ssh`
 - `rsync`
 - Rust toolchain (if installing with `cargo install --path .`)
 
 Remote machine:
+
 - Ubuntu host reachable over SSH
 
 ### Remote Setup (run as root on Ubuntu)
@@ -156,8 +148,7 @@ Integration tests require SSH access to a remote host (localhost works):
 RELOCAL_TEST_REMOTE=$USER@localhost cargo test -- --ignored --test-threads=1
 ```
 
-The `--test-threads=1` flag is required because integration tests share remote
-state.
+The `--test-threads=1` flag is required because integration tests share remote state.
 
 ### Design Notes
 
