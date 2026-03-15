@@ -1,7 +1,7 @@
 //! `relocal remote nuke` — deletes everything under `~/relocal/` on the remote.
 //!
 //! This is a development/upgrade escape hatch for when you want a clean slate.
-//! It does NOT uninstall APT packages, Rust, or Claude Code.
+//! It does NOT uninstall APT packages, Rust, Claude Code, or Codex.
 
 use tracing::info;
 

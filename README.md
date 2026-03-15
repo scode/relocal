@@ -104,7 +104,7 @@ relocal init
 # Follow the prompts and set remote to user@host
 grep -qxF 'relocal.toml' .gitignore 2>/dev/null || echo 'relocal.toml' >> .gitignore
 
-# Install dependencies on the remote (Rust, Node, Claude Code, etc.)
+# Install dependencies on the remote (Rust, Node, Claude Code, Codex, etc.)
 relocal remote install
 
 # Start a session — syncs your repo and launches Claude on the remote
