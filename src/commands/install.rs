@@ -1,6 +1,6 @@
 //! `relocal remote install` — installs the full environment on the remote host.
 //!
-//! Performs five idempotent steps: APT packages, GitHub CLI, Rust, Claude Code,
+//! Performs six idempotent steps: APT packages, Homebrew, gh, Rust, Claude Code,
 //! and Claude auth. Safe to re-run at any time.
 
 use tracing::info;
@@ -13,6 +13,7 @@ use crate::ssh;
 /// Runs all remote installation steps in order.
 pub fn run(runner: &dyn CommandRunner, config: &Config) -> Result<()> {
     install_apt_packages(runner, config)?;
+    install_homebrew(runner, config)?;
     install_github_cli(runner, config)?;
     install_rust(runner, config)?;
     install_claude_code(runner, config)?;
@@ -38,6 +39,29 @@ fn install_apt_packages(runner: &dyn CommandRunner, config: &Config) -> Result<(
     Ok(())
 }
 
+fn install_homebrew(runner: &dyn CommandRunner, config: &Config) -> Result<()> {
+    info!("Checking for Homebrew...");
+    let check = runner.run_ssh(&config.remote, "command -v brew")?;
+    if check.status.success() {
+        info!("Homebrew already installed, skipping.");
+        return Ok(());
+    }
+
+    info!("Installing Homebrew (Linuxbrew)...");
+    runner.run_ssh(
+        &config.remote,
+        "NONINTERACTIVE=1 bash -c 'curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh | bash'",
+    )?.check("homebrew install")?;
+
+    // Add brew to PATH for future login shells (idempotent: skip if already present)
+    info!("Adding Homebrew to PATH...");
+    runner.run_ssh(
+        &config.remote,
+        "grep -q linuxbrew ~/.profile 2>/dev/null || echo 'eval \"$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)\"' >> ~/.profile",
+    )?.check("homebrew PATH setup")?;
+    Ok(())
+}
+
 fn install_github_cli(runner: &dyn CommandRunner, config: &Config) -> Result<()> {
     info!("Checking for GitHub CLI...");
     let check = runner.run_ssh(&config.remote, "command -v gh")?;
@@ -46,11 +70,10 @@ fn install_github_cli(runner: &dyn CommandRunner, config: &Config) -> Result<()>
         return Ok(());
     }
 
-    info!("Installing GitHub CLI...");
-    runner.run_ssh(
-        &config.remote,
-        "curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && echo 'deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main' | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null && sudo apt-get update && sudo apt-get install -y gh",
-    )?.check("gh install")?;
+    info!("Installing GitHub CLI via Homebrew...");
+    runner
+        .run_ssh(&config.remote, "brew install gh")?
+        .check("brew install gh")?;
     Ok(())
 }
 
@@ -165,9 +188,68 @@ apt_packages = ["libssl-dev", "pkg-config"]
     }
 
     #[test]
+    fn homebrew_skipped_when_present() {
+        let mock = MockRunner::new();
+        mock.add_response(MockResponse::Ok(
+            "/home/linuxbrew/.linuxbrew/bin/brew\n".into(),
+        ));
+
+        install_homebrew(&mock, &test_config()).unwrap();
+
+        let inv = mock.invocations();
+        assert_eq!(inv.len(), 1);
+        match &inv[0] {
+            Invocation::Ssh { command, .. } => {
+                assert!(command.contains("command -v brew"));
+            }
+            _ => panic!("expected Ssh"),
+        }
+    }
+
+    #[test]
+    fn homebrew_installed_when_absent() {
+        let mock = MockRunner::new();
+        mock.add_response(MockResponse::Fail(String::new())); // check -> not found
+        mock.add_response(MockResponse::Ok(String::new())); // install
+        mock.add_response(MockResponse::Ok(String::new())); // PATH setup
+
+        install_homebrew(&mock, &test_config()).unwrap();
+
+        let inv = mock.invocations();
+        assert_eq!(inv.len(), 3);
+        match &inv[1] {
+            Invocation::Ssh { command, .. } => {
+                assert!(command.contains("Homebrew"));
+                assert!(command.contains("NONINTERACTIVE=1"));
+            }
+            _ => panic!("expected Ssh"),
+        }
+        match &inv[2] {
+            Invocation::Ssh { command, .. } => {
+                assert!(command.contains("linuxbrew"));
+                assert!(command.contains(".profile"));
+            }
+            _ => panic!("expected Ssh for PATH setup"),
+        }
+    }
+
+    #[test]
+    fn homebrew_path_setup_failure_returns_error() {
+        let mock = MockRunner::new();
+        mock.add_response(MockResponse::Fail(String::new())); // check -> not found
+        mock.add_response(MockResponse::Ok(String::new())); // install succeeds
+        mock.add_response(MockResponse::Fail("permission denied".into())); // PATH setup fails
+
+        let result = install_homebrew(&mock, &test_config());
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn github_cli_skipped_when_present() {
         let mock = MockRunner::new();
-        mock.add_response(MockResponse::Ok("/usr/bin/gh\n".into()));
+        mock.add_response(MockResponse::Ok(
+            "/home/linuxbrew/.linuxbrew/bin/gh\n".into(),
+        ));
 
         install_github_cli(&mock, &test_config()).unwrap();
 
@@ -193,8 +275,7 @@ apt_packages = ["libssl-dev", "pkg-config"]
         assert_eq!(inv.len(), 2);
         match &inv[1] {
             Invocation::Ssh { command, .. } => {
-                assert!(command.contains("gh"));
-                assert!(command.contains("githubcli-archive-keyring"));
+                assert!(command.contains("brew install gh"));
             }
             _ => panic!("expected Ssh"),
         }
@@ -321,10 +402,20 @@ apt_packages = ["libssl-dev", "pkg-config"]
     }
 
     #[test]
-    fn github_cli_install_failure_returns_error() {
+    fn homebrew_install_failure_returns_error() {
         let mock = MockRunner::new();
         mock.add_response(MockResponse::Fail(String::new())); // check -> not found
         mock.add_response(MockResponse::Fail("curl failed".into())); // install fails
+
+        let result = install_homebrew(&mock, &test_config());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn github_cli_install_failure_returns_error() {
+        let mock = MockRunner::new();
+        mock.add_response(MockResponse::Fail(String::new())); // check -> not found
+        mock.add_response(MockResponse::Fail("brew failed".into())); // install fails
 
         let result = install_github_cli(&mock, &test_config());
         assert!(result.is_err());
@@ -355,20 +446,22 @@ apt_packages = ["libssl-dev", "pkg-config"]
         let mock = MockRunner::new();
         // 1. APT
         mock.add_response(MockResponse::Ok(String::new()));
-        // 2. gh check -> present
+        // 2. brew check -> present
+        mock.add_response(MockResponse::Ok("brew".into()));
+        // 3. gh check -> present
         mock.add_response(MockResponse::Ok("gh".into()));
-        // 3. rustup check -> present
+        // 4. rustup check -> present
         mock.add_response(MockResponse::Ok("rustup".into()));
-        // 4. claude check -> present
+        // 5. claude check -> present
         mock.add_response(MockResponse::Ok("claude".into()));
-        // 5. auth check -> authenticated
+        // 6. auth check -> authenticated
         mock.add_response(MockResponse::Ok("ok".into()));
 
         run(&mock, &test_config()).unwrap();
 
         let inv = mock.invocations();
-        // APT(1) + gh check(1) + rustup check(1) + claude check(1) + auth check(1) = 5
-        assert_eq!(inv.len(), 5);
+        // APT(1) + brew check(1) + gh check(1) + rustup check(1) + claude check(1) + auth check(1) = 6
+        assert_eq!(inv.len(), 6);
 
         // All commands go to the right remote
         for i in &inv {

@@ -98,20 +98,22 @@ remote (or re-run to update). Performs the following steps in order:
    sudo apt-get update && sudo apt-get install -y build-essential git nodejs npm <user-packages>
    ```
 
-2. **GitHub CLI**: Installs `gh` from the official APT repository if not already
-   on PATH.
+2. **Homebrew (Linuxbrew)**: Installs Homebrew if `brew` is not already on PATH.
+   Used as the package manager for tools like `gh`.
 
-3. **Rust via rustup**: Installs stable Rust if `rustup` is not already present.
+3. **GitHub CLI**: Installs `gh` via `brew install gh` if not already on PATH.
+
+4. **Rust via rustup**: Installs stable Rust if `rustup` is not already present.
    ```
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
    ```
 
-4. **Claude Code**: Installs via npm if `claude` is not already on PATH.
+5. **Claude Code**: Installs via npm if `claude` is not already on PATH.
    ```
    npm install -g @anthropic-ai/claude-code
    ```
 
-5. **Claude authentication**: Runs `claude login` interactively if Claude is not
+6. **Claude authentication**: Runs `claude login` interactively if Claude is not
    already authenticated. The user follows the normal login flow (supports both
    API key and subscription-based auth). Since the SSH session has a terminal
    attached, the interactive login works as normal.
