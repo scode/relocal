@@ -34,7 +34,7 @@ fn install_apt_packages(runner: &dyn CommandRunner, config: &Config) -> Result<(
 
     let pkg_list = packages.join(" ");
     let cmd = format!("sudo apt-get update && sudo apt-get install -y {pkg_list}");
-    runner.run_ssh(&config.remote, &cmd)?;
+    runner.run_ssh(&config.remote, &cmd)?.check("apt-get")?;
     Ok(())
 }
 
@@ -50,7 +50,7 @@ fn install_github_cli(runner: &dyn CommandRunner, config: &Config) -> Result<()>
     runner.run_ssh(
         &config.remote,
         "curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && echo 'deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main' | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null && sudo apt-get update && sudo apt-get install -y gh",
-    )?;
+    )?.check("gh install")?;
     Ok(())
 }
 
@@ -63,10 +63,12 @@ fn install_rust(runner: &dyn CommandRunner, config: &Config) -> Result<()> {
     }
 
     info!("Installing Rust via rustup...");
-    runner.run_ssh(
-        &config.remote,
-        "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y",
-    )?;
+    runner
+        .run_ssh(
+            &config.remote,
+            "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y",
+        )?
+        .check("rustup install")?;
     Ok(())
 }
 
@@ -79,7 +81,9 @@ fn install_claude_code(runner: &dyn CommandRunner, config: &Config) -> Result<()
     }
 
     info!("Installing Claude Code via npm...");
-    runner.run_ssh(&config.remote, "npm install -g @anthropic-ai/claude-code")?;
+    runner
+        .run_ssh(&config.remote, "npm install -g @anthropic-ai/claude-code")?
+        .check("npm install claude-code")?;
     Ok(())
 }
 
@@ -92,7 +96,13 @@ fn authenticate_claude(runner: &dyn CommandRunner, config: &Config) -> Result<()
     }
 
     info!("Running claude login (interactive)...");
-    runner.run_ssh_interactive(&config.remote, "claude login")?;
+    let status = runner.run_ssh_interactive(&config.remote, "claude login")?;
+    if !status.success() {
+        return Err(crate::error::Error::CommandFailed {
+            command: "claude login".to_string(),
+            message: "interactive login failed".to_string(),
+        });
+    }
     Ok(())
 }
 
@@ -287,6 +297,57 @@ apt_packages = ["libssl-dev", "pkg-config"]
         assert!(
             matches!(&inv[1], Invocation::SshInteractive { command, .. } if command.contains("claude login"))
         );
+    }
+
+    #[test]
+    fn claude_auth_login_failure_returns_error() {
+        let mock = MockRunner::new();
+        mock.add_response(MockResponse::Fail(String::new())); // not authenticated
+        mock.add_response(MockResponse::Fail(String::new())); // login fails
+
+        let result = authenticate_claude(&mock, &test_config());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("claude login"));
+    }
+
+    #[test]
+    fn apt_install_failure_returns_error() {
+        let mock = MockRunner::new();
+        mock.add_response(MockResponse::Fail("E: Unable to locate package".into()));
+
+        let result = install_apt_packages(&mock, &test_config());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("apt-get"));
+    }
+
+    #[test]
+    fn github_cli_install_failure_returns_error() {
+        let mock = MockRunner::new();
+        mock.add_response(MockResponse::Fail(String::new())); // check -> not found
+        mock.add_response(MockResponse::Fail("curl failed".into())); // install fails
+
+        let result = install_github_cli(&mock, &test_config());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rust_install_failure_returns_error() {
+        let mock = MockRunner::new();
+        mock.add_response(MockResponse::Fail(String::new())); // check -> not found
+        mock.add_response(MockResponse::Fail("curl failed".into())); // install fails
+
+        let result = install_rust(&mock, &test_config());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn claude_code_install_failure_returns_error() {
+        let mock = MockRunner::new();
+        mock.add_response(MockResponse::Fail(String::new())); // check -> not found
+        mock.add_response(MockResponse::Fail("npm ERR!".into())); // install fails
+
+        let result = install_claude_code(&mock, &test_config());
+        assert!(result.is_err());
     }
 
     #[test]
