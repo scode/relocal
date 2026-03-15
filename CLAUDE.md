@@ -60,6 +60,21 @@ Integration tests share remote state and must run sequentially:
 RELOCAL_TEST_REMOTE=$USER@localhost cargo test -- --ignored --test-threads=1
 ```
 
+## Conventional Commits
+
+All commit messages and PR titles must use Conventional Commit format: `<type>: <short summary>`
+
+Allowed types: `feat`, `fix`, `docs`, `perf`, `refactor`, `style`, `test`, `chore`, `ci`, `revert`.
+
+Append `!` after the type for breaking changes (e.g. `feat!: remove legacy endpoint`). Scope is optional.
+
+Rules:
+
+- Type reflects the user-visible effect, not the implementation activity. A bug fix that requires heavy refactoring is
+  `fix`, not `refactor`. A new CLI flag is `feat`, not `chore`.
+- The summary after the colon is lowercase, imperative mood, no trailing period.
+- Keep the first line under 72 characters.
+
 ## Before Finishing Work
 
 Before considering any task complete, verify the implementation still satisfies `SPEC.md`. Read the relevant spec
