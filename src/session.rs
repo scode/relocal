@@ -1,8 +1,8 @@
 //! Session name validation and default derivation.
 //!
-//! Each session maps to a remote working directory at `~/relocal/<session-name>/`
-//! and a pair of FIFOs at `~/relocal/.fifos/<session-name>-{request,ack}`. The
-//! name is embedded in filesystem paths, so it must be restricted to safe characters.
+//! Each session maps to a remote working directory at `~/relocal/<session-name>/`.
+//! The name is embedded in filesystem paths, so it must be restricted to safe
+//! characters.
 
 use std::path::Path;
 

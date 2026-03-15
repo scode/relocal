@@ -5,20 +5,19 @@
 > Bugs or misconfiguration can delete local files. There are safety checks
 > but the tool has not been battle-tested.
 
-relocal runs Claude Code on a remote Ubuntu host while your local repo stays
-the source of truth through automatic bidirectional sync. When you submit a
-prompt, local changes are pushed to the remote before Claude sees them; when
-Claude finishes responding, its changes are pulled back. This lets you review
-and edit code locally in your editor while Claude Code runs in your terminal,
-with no manual synchronization.
+relocal runs Claude Code on a remote Ubuntu host while keeping your local repo
+current with Claude's changes. Your code is pushed to the remote at session
+start, and a background loop continuously pulls remote changes back to local
+while Claude works. You can review Claude's output locally in your editor while
+it runs in your terminal. Local edits during a session are not synced to the
+remote — use `relocal sync push` between sessions to send local changes.
 
 ## Security Model and Host Exposure
 
 `relocal` runs Claude remotely with `--dangerously-skip-permissions` and syncs
-your repo bidirectionally with `rsync --delete`, including the entire `.git/`
-directory. These rsync operations are triggered by Claude hooks: `UserPromptSubmit`
-pushes local changes before Claude processes your prompt, and `Stop` pulls
-remote changes back after Claude finishes a response.
+your repo with `rsync --delete`, including the entire `.git/` directory. Your
+code is pushed at session start, and a background loop continuously pulls
+remote changes to local while the session runs.
 
 ### Caveats
 
@@ -115,7 +114,7 @@ relocal remote install
 relocal claude
 ```
 
-Once the session is running, hooks keep local and remote in sync automatically.
+Once the session is running, a background loop keeps local in sync with remote changes automatically.
 
 ### Common Commands
 

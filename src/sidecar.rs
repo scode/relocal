@@ -1,41 +1,36 @@
-//! Sync sidecar — background mediator between remote hooks and local rsync.
+//! Background sync loop — continuously pulls remote changes to local.
 //!
-//! The sidecar reads sync requests from a remote FIFO via SSH, runs the
-//! appropriate rsync (push or pull), and writes an ack back to the remote.
-//! It runs on a background thread managed by [`Sidecar`], which provides
-//! a [`Sidecar::shutdown`] method for clean termination.
-//!
-//! The request-handling logic is in [`handle_request`], a pure orchestration
-//! function testable with [`MockRunner`](crate::test_support::MockRunner).
+//! A background thread runs `sync_pull` on a fixed interval while the
+//! interactive session is active. Uses `mpsc::recv_timeout` for clean,
+//! fast shutdown.
 
-use std::io::BufRead;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::PathBuf;
+use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use tracing::warn;
 
-use crate::commands::sync::{sync_pull, sync_push};
+use crate::commands::sync::sync_pull;
 use crate::config::Config;
 use crate::error::Result;
 use crate::runner::CommandRunner;
-use crate::ssh;
 
-/// Manages a background thread that reads sync requests from the remote FIFO
-/// and dispatches rsync + ack operations.
+/// How often the background loop runs sync_pull.
+const SYNC_INTERVAL: Duration = Duration::from_secs(3);
+
+/// Manages a background thread that periodically syncs remote changes to local.
 pub struct Sidecar {
     thread: Option<JoinHandle<()>>,
-    ssh_child: Option<Child>,
-    shutdown_flag: Arc<AtomicBool>,
+    shutdown_sender: Option<mpsc::Sender<()>>,
 }
 
 impl Sidecar {
-    /// Starts the sidecar background thread.
+    /// Starts the background sync loop.
     ///
-    /// Opens an SSH connection that reads from the session's request FIFO in a
-    /// loop. Each line triggers an rsync operation and ack write.
+    /// The loop runs `sync_pull` every [`SYNC_INTERVAL`] seconds. Transient
+    /// failures are logged as warnings and do not stop the loop.
     pub fn start(
         runner: Arc<dyn CommandRunner + Send + Sync>,
         config: Config,
@@ -43,72 +38,30 @@ impl Sidecar {
         repo_root: PathBuf,
         verbose: bool,
     ) -> Result<Self> {
-        let shutdown_flag = Arc::new(AtomicBool::new(false));
-        let flag_clone = shutdown_flag.clone();
-
-        let fifo_cmd = ssh::read_request_fifo(&session_name);
-        let mut child = Command::new("ssh")
-            .args([&config.remote, &fifo_cmd])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .stdin(Stdio::null())
-            .spawn()?;
-
-        let stdout = child.stdout.take().expect("stdout was piped");
+        let (tx, rx) = mpsc::channel();
 
         let thread = thread::spawn(move || {
-            let reader = std::io::BufReader::new(stdout);
-            for line in reader.lines() {
-                if flag_clone.load(Ordering::Relaxed) {
-                    break;
+            while let Err(mpsc::RecvTimeoutError::Timeout) = rx.recv_timeout(SYNC_INTERVAL) {
+                if let Err(e) =
+                    sync_pull(runner.as_ref(), &config, &session_name, &repo_root, verbose)
+                {
+                    warn!("background sync failed: {e}");
                 }
-                let Ok(request) = line else {
-                    break;
-                };
-                let trimmed = request.trim().to_string();
-                if trimmed.is_empty() {
-                    continue;
-                }
-
-                let result = handle_request(
-                    runner.as_ref(),
-                    &config,
-                    &session_name,
-                    &repo_root,
-                    verbose,
-                    &trimmed,
-                );
-
-                // Write ack regardless of whether we're shutting down — the
-                // remote hook is blocking on it.
-                let ack_msg = match &result {
-                    Ok(()) => "ok".to_string(),
-                    Err(e) => format!("error:{e}"),
-                };
-                let _ = runner.run_ssh(&config.remote, &ssh::write_ack(&session_name, &ack_msg));
             }
         });
 
-        Ok(Sidecar {
+        Ok(Self {
             thread: Some(thread),
-            ssh_child: Some(child),
-            shutdown_flag,
+            shutdown_sender: Some(tx),
         })
     }
 
-    /// Signals the sidecar to stop and waits for the background thread to exit.
+    /// Signals the background loop to stop and waits for it to exit.
     ///
-    /// Kills the SSH process reading the FIFO (which unblocks the reader thread),
-    /// then joins the thread.
+    /// Dropping the channel sender unblocks `recv_timeout` immediately,
+    /// giving sub-millisecond shutdown latency.
     pub fn shutdown(&mut self) {
-        self.shutdown_flag.store(true, Ordering::Relaxed);
-
-        if let Some(ref mut child) = self.ssh_child {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        self.ssh_child = None;
-
+        self.shutdown_sender.take();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -121,32 +74,45 @@ impl Drop for Sidecar {
     }
 }
 
-/// Handles a single sync request by running rsync in the appropriate direction.
-///
-/// This is the core logic, separated from the threading/SSH-process concerns
-/// so it can be tested with [`MockRunner`](crate::test_support::MockRunner).
-pub fn handle_request(
-    runner: &dyn CommandRunner,
-    config: &Config,
-    session_name: &str,
-    repo_root: &Path,
-    verbose: bool,
-    request: &str,
-) -> Result<()> {
-    match request {
-        "push" => sync_push(runner, config, session_name, repo_root, verbose),
-        "pull" => sync_pull(runner, config, session_name, repo_root, verbose),
-        other => {
-            warn!("Sidecar: unknown request: {other}");
-            Ok(())
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{Invocation, MockResponse, MockRunner};
+    use crate::runner::CommandOutput;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::ExitStatus;
+
+    /// Thread-safe mock runner for sidecar tests.
+    struct ThreadSafeRunner;
+
+    fn ok_output() -> CommandOutput {
+        CommandOutput {
+            stdout: String::new(),
+            stderr: String::new(),
+            status: ExitStatus::from_raw(0),
+        }
+    }
+
+    impl CommandRunner for ThreadSafeRunner {
+        fn run_ssh(&self, _remote: &str, _command: &str) -> crate::error::Result<CommandOutput> {
+            Ok(ok_output())
+        }
+        fn run_ssh_interactive(
+            &self,
+            _remote: &str,
+            _command: &str,
+        ) -> crate::error::Result<ExitStatus> {
+            Ok(ExitStatus::from_raw(0))
+        }
+        fn run_rsync(
+            &self,
+            _params: &crate::rsync::RsyncParams,
+        ) -> crate::error::Result<CommandOutput> {
+            Ok(ok_output())
+        }
+        fn run_local(&self, _program: &str, _args: &[&str]) -> crate::error::Result<CommandOutput> {
+            Ok(ok_output())
+        }
+    }
 
     fn test_config() -> Config {
         Config::parse("remote = \"user@host\"").unwrap()
@@ -157,143 +123,27 @@ mod tests {
     }
 
     #[test]
-    fn push_request_triggers_rsync() {
-        let mock = MockRunner::new();
-        // rsync (push)
-        mock.add_response(MockResponse::Ok(String::new()));
+    fn shutdown_is_immediate() {
+        let runner = Arc::new(ThreadSafeRunner);
 
-        handle_request(&mock, &test_config(), "s1", &repo_root(), false, "push").unwrap();
+        let mut sidecar =
+            Sidecar::start(runner, test_config(), "s1".into(), repo_root(), false).unwrap();
 
-        let inv = mock.invocations();
-        // Just rsync, no hook reinjection
-        assert_eq!(inv.len(), 1);
-
-        match &inv[0] {
-            Invocation::Rsync { args, .. } => {
-                let last = args.last().unwrap();
-                assert!(last.contains("user@host:"));
-            }
-            _ => panic!("expected Rsync, got {:?}", inv[0]),
-        }
+        // Shutdown should return quickly (well within 1 second, not waiting
+        // for the full 3-second interval)
+        let start = std::time::Instant::now();
+        sidecar.shutdown();
+        assert!(start.elapsed() < Duration::from_secs(1));
     }
 
     #[test]
-    fn pull_request_triggers_fsck_then_rsync() {
-        let mock = MockRunner::new();
-        // git fsck
-        mock.add_response(MockResponse::Ok(String::new()));
-        // rsync (pull)
-        mock.add_response(MockResponse::Ok(String::new()));
+    fn drop_shuts_down_cleanly() {
+        let runner = Arc::new(ThreadSafeRunner);
 
-        handle_request(&mock, &test_config(), "s1", &repo_root(), false, "pull").unwrap();
+        let sidecar =
+            Sidecar::start(runner, test_config(), "s1".into(), repo_root(), false).unwrap();
 
-        let inv = mock.invocations();
-        // git fsck (1) + rsync (1), no hook reinjection
-        assert_eq!(inv.len(), 2);
-        match &inv[0] {
-            Invocation::Ssh { command, .. } => {
-                assert!(command.contains("git fsck"));
-            }
-            _ => panic!("expected Ssh for git fsck"),
-        }
-        match &inv[1] {
-            Invocation::Rsync { args, .. } => {
-                let last = args.last().unwrap();
-                assert!(last.starts_with("/home/user/my-project/"));
-            }
-            _ => panic!("expected Rsync"),
-        }
-    }
-
-    #[test]
-    fn rsync_failure_returns_error() {
-        let mock = MockRunner::new();
-        // rsync fails
-        mock.add_response(MockResponse::Err("rsync failed".into()));
-
-        let result = handle_request(&mock, &test_config(), "s1", &repo_root(), false, "push");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn unknown_request_is_ignored() {
-        let mock = MockRunner::new();
-        // No responses needed — unknown request doesn't trigger any commands
-
-        handle_request(&mock, &test_config(), "s1", &repo_root(), false, "bogus").unwrap();
-
-        let inv = mock.invocations();
-        assert!(inv.is_empty());
-    }
-
-    #[test]
-    fn multiple_sequential_requests() {
-        let mock = MockRunner::new();
-        // First request: push
-        mock.add_response(MockResponse::Ok(String::new())); // rsync
-
-        // Second request: pull
-        mock.add_response(MockResponse::Ok(String::new())); // git fsck
-        mock.add_response(MockResponse::Ok(String::new())); // rsync
-
-        // Third request: push
-        mock.add_response(MockResponse::Ok(String::new())); // rsync
-
-        handle_request(&mock, &test_config(), "s1", &repo_root(), false, "push").unwrap();
-        handle_request(&mock, &test_config(), "s1", &repo_root(), false, "pull").unwrap();
-        handle_request(&mock, &test_config(), "s1", &repo_root(), false, "push").unwrap();
-
-        let inv = mock.invocations();
-        // push(1) + pull(2: fsck+rsync) + push(1) = 4
-        assert_eq!(inv.len(), 4);
-
-        // Verify pattern
-        assert!(matches!(&inv[0], Invocation::Rsync { .. })); // push rsync
-        assert!(matches!(&inv[1], Invocation::Ssh { .. })); // pull fsck
-        assert!(matches!(&inv[2], Invocation::Rsync { .. })); // pull rsync
-        assert!(matches!(&inv[3], Invocation::Rsync { .. })); // push rsync
-    }
-
-    #[test]
-    fn push_with_verbose_flag() {
-        let mock = MockRunner::new();
-        mock.add_response(MockResponse::Ok(String::new())); // rsync
-
-        handle_request(&mock, &test_config(), "s1", &repo_root(), true, "push").unwrap();
-
-        let inv = mock.invocations();
-        match &inv[0] {
-            Invocation::Rsync { args, .. } => {
-                assert!(args.contains(&"--progress".to_string()));
-            }
-            _ => panic!("expected Rsync"),
-        }
-    }
-
-    #[test]
-    fn correct_session_name_in_operations() {
-        let mock = MockRunner::new();
-        mock.add_response(MockResponse::Ok(String::new())); // rsync
-
-        handle_request(
-            &mock,
-            &test_config(),
-            "my-project",
-            &repo_root(),
-            false,
-            "push",
-        )
-        .unwrap();
-
-        let inv = mock.invocations();
-        assert_eq!(inv.len(), 1);
-        // Rsync uses session name in remote path
-        match &inv[0] {
-            Invocation::Rsync { args, .. } => {
-                let last = args.last().unwrap();
-                assert!(last.contains("my-project"));
-            }
-            _ => panic!("expected Rsync"),
-        }
+        // Dropping should not panic or hang
+        drop(sidecar);
     }
 }

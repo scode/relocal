@@ -1,7 +1,6 @@
 //! `relocal list` — lists all sessions on the remote.
 //!
-//! Lists directories under `~/relocal/`, excluding `.bin/` and `.fifos/`,
-//! and prints each session name.
+//! Lists directories under `~/relocal/` and prints each session name.
 
 use crate::config::Config;
 use crate::error::Result;
@@ -54,7 +53,6 @@ mod tests {
             Invocation::Ssh { remote, command } => {
                 assert_eq!(remote, "user@host");
                 assert!(command.contains("du -sh"));
-                assert!(command.contains("grep -v"));
             }
             _ => panic!("expected Ssh"),
         }

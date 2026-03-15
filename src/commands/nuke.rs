@@ -18,7 +18,7 @@ pub fn run(runner: &dyn CommandRunner, config: &Config, confirm: bool) -> Result
     if confirm {
         let prompt = format!(
             "Delete ALL relocal data on {}? This removes ~/relocal/ entirely \
-             (all sessions, FIFOs, and the hook script).",
+             (all sessions).",
             config.remote
         );
         let confirmed = dialoguer::Confirm::new()

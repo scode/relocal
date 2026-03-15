@@ -4,7 +4,6 @@ pub mod commands;
 pub mod config;
 pub mod discovery;
 pub mod error;
-pub mod hooks;
 pub mod rsync;
 pub mod runner;
 pub mod session;

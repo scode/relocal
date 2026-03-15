@@ -1,22 +1,22 @@
 //! `relocal claude [session-name]` — main orchestration command.
 //!
-//! Syncs the repo to the remote, launches an interactive Claude session, and
-//! manages a background sidecar that handles hook-triggered syncs. On exit,
-//! cleans up FIFOs and prints a summary.
+//! Syncs the repo to the remote, launches an interactive Claude session with
+//! continuous background synchronization, and performs a final pull on clean exit.
 
 use std::path::Path;
 use std::sync::Arc;
 
 use tracing::{error, info, warn};
 
-use crate::commands::sync::{reinject_hooks, sync_push};
+use crate::commands::sync::{sync_pull, sync_push};
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::runner::{CommandRunner, ProcessRunner};
 use crate::sidecar::Sidecar;
-use crate::ssh;
+use crate::ssh::{self, SshControlMaster};
 
-/// Production entry point: runs the full start flow with real sidecar and SSH.
+/// Production entry point: runs the full session flow with ControlMaster,
+/// background sync, and interactive SSH.
 pub fn run(
     config: &Config,
     session_name: &str,
@@ -24,13 +24,18 @@ pub fn run(
     verbose: bool,
     claude_args: &[String],
 ) -> Result<()> {
-    let runner = ProcessRunner::default();
+    // Establish persistent SSH connection
+    info!("Establishing SSH ControlMaster...");
+    let control_master = SshControlMaster::start(&config.remote, session_name)?;
+    let runner = ProcessRunner::with_control_path(control_master.socket_path());
 
-    // Pre-sidecar setup
+    // Pre-session setup
     setup(&runner, config, session_name, repo_root, verbose)?;
 
-    // Start sidecar
-    let sidecar_runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(ProcessRunner::default());
+    // Start background sync loop
+    let sidecar_runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(
+        ProcessRunner::with_control_path(control_master.socket_path()),
+    );
     let mut sidecar = Sidecar::start(
         sidecar_runner,
         config.clone(),
@@ -45,13 +50,18 @@ pub fn run(
         &ssh::start_claude_session(session_name, claude_args),
     );
 
-    // Cleanup always runs
+    // Shutdown background sync
     sidecar.shutdown();
-    let cleanup_result = cleanup(&runner, config, session_name);
 
     // Report results
     match ssh_result {
         Ok(status) if status.success() => {
+            // Final pull on clean exit
+            info!("Performing final sync pull...");
+            if let Err(e) = sync_pull(&runner, config, session_name, repo_root, verbose) {
+                warn!("Final sync pull failed: {e}");
+                warn!("Use `relocal sync pull {session_name}` to retry manually.");
+            }
             print_summary(session_name, config);
         }
         Ok(_status) => {
@@ -63,17 +73,18 @@ pub fn run(
         }
     }
 
-    // Report cleanup failure but don't fail the command
-    if let Err(e) = cleanup_result {
-        warn!("FIFO cleanup failed: {e}");
+    // Clean up lock file (best-effort)
+    if let Err(e) = cleanup(&runner, config, session_name) {
+        warn!("Lock file cleanup failed: {e}");
         warn!("You may need to run: relocal destroy {session_name}");
     }
 
+    // ControlMaster is torn down by Drop
     Ok(())
 }
 
-/// Pre-sidecar setup: check stale FIFOs, create remote dir, create FIFOs,
-/// initial push, and install hooks.
+/// Pre-session setup: check for stale session, check Claude is installed,
+/// create remote dir, acquire lock, initial push.
 ///
 /// Separated from `run` so it can be tested with [`MockRunner`].
 pub fn setup(
@@ -83,16 +94,16 @@ pub fn setup(
     repo_root: &Path,
     verbose: bool,
 ) -> Result<()> {
-    // 1. Check for stale FIFOs
+    // 1. Check for stale session
     info!("Checking for stale session...");
-    let fifo_check = runner.run_ssh(&config.remote, &ssh::check_fifos_exist(session_name))?;
-    if fifo_check.status.success() {
+    let lock_check = runner.run_ssh(&config.remote, &ssh::check_lock_file_exists(session_name))?;
+    if lock_check.status.success() {
         return Err(Error::StaleSession {
             session: session_name.to_string(),
         });
     }
 
-    // 1b. Check Claude is installed on remote
+    // 2. Check Claude is installed on remote
     info!("Checking Claude installation...");
     let claude_check = runner.run_ssh(&config.remote, &ssh::check_claude_installed())?;
     if !claude_check.status.success() {
@@ -103,28 +114,21 @@ pub fn setup(
         });
     }
 
-    // 2. Create remote working directory
+    // 3. Create remote working directory and acquire lock
     info!("Creating remote working directory...");
     runner.run_ssh(&config.remote, &ssh::mkdir_work_dir(session_name))?;
-
-    // 3. Create FIFOs (ensure the .fifos dir exists first)
-    info!("Creating FIFOs...");
-    runner.run_ssh(&config.remote, &ssh::mkdir_fifos_dir())?;
-    runner.run_ssh(&config.remote, &ssh::create_fifos(session_name))?;
+    runner.run_ssh(&config.remote, &ssh::create_lock_file(session_name))?;
 
     // 4. Initial push
     sync_push(runner, config, session_name, repo_root, verbose)?;
 
-    // 5. Install hooks into remote .claude/settings.json
-    reinject_hooks(runner, config, session_name)?;
-
     Ok(())
 }
 
-/// Post-session cleanup: remove FIFOs (best-effort).
+/// Post-session cleanup: remove lock file (best-effort).
 pub fn cleanup(runner: &dyn CommandRunner, config: &Config, session_name: &str) -> Result<()> {
-    info!("Cleaning up FIFOs...");
-    runner.run_ssh(&config.remote, &ssh::remove_fifos(session_name))?;
+    info!("Removing lock file...");
+    runner.run_ssh(&config.remote, &ssh::remove_lock_file(session_name))?;
     Ok(())
 }
 
@@ -166,36 +170,30 @@ mod tests {
     #[test]
     fn setup_full_sequence() {
         let mock = MockRunner::new();
-        // 1. check_fifos_exist -> not found (good)
+        // 1. lock check -> not found (good)
         mock.add_response(MockResponse::Fail(String::new()));
-        // 1b. check_claude_installed -> found
+        // 2. check_claude_installed -> found
         mock.add_response(MockResponse::Ok("/usr/local/bin/claude\n".into()));
-        // 2. mkdir_work_dir
+        // 3. mkdir_work_dir
         mock.add_response(MockResponse::Ok(String::new()));
-        // 3a. mkdir_fifos_dir
-        mock.add_response(MockResponse::Ok(String::new()));
-        // 3b. create_fifos
+        // 3b. create_lock_file
         mock.add_response(MockResponse::Ok(String::new()));
         // 4. sync_push: rsync
-        mock.add_response(MockResponse::Ok(String::new()));
-        // 5. reinject_hooks: read settings.json
-        mock.add_response(MockResponse::Fail(String::new()));
-        // 5. reinject_hooks: write settings.json
         mock.add_response(MockResponse::Ok(String::new()));
 
         setup(&mock, &test_config(), "my-session", &repo_root(), false).unwrap();
 
         let inv = mock.invocations();
-        // check_fifos(1) + claude_check(1) + mkdir(1) + mkdir_fifos(1) + create_fifos(1) + rsync(1) + read_settings(1) + write_settings(1) = 8
-        assert_eq!(inv.len(), 8);
+        // lock_check(1) + claude_check(1) + mkdir(1) + lock_create(1) + rsync(1) = 5
+        assert_eq!(inv.len(), 5);
 
-        // Verify order: check fifos
+        // lock check
         match &inv[0] {
             Invocation::Ssh { command, .. } => {
                 assert!(command.contains("test -e"));
-                assert!(command.contains("my-session"));
+                assert!(command.contains(".locks"));
             }
-            _ => panic!("expected Ssh for fifo check"),
+            _ => panic!("expected Ssh for lock check"),
         }
 
         // claude check
@@ -215,41 +213,23 @@ mod tests {
             _ => panic!("expected Ssh for mkdir"),
         }
 
-        // mkdir fifos dir
+        // lock file creation
         match &inv[3] {
             Invocation::Ssh { command, .. } => {
-                assert!(command.contains("mkdir -p"));
-                assert!(command.contains(".fifos"));
+                assert!(command.contains("noclobber"));
+                assert!(command.contains(".locks"));
             }
-            _ => panic!("expected Ssh for mkdir fifos"),
-        }
-
-        // create fifos
-        match &inv[4] {
-            Invocation::Ssh { command, .. } => {
-                assert!(command.contains("mkfifo"));
-                assert!(command.contains("my-session-request"));
-                assert!(command.contains("my-session-ack"));
-            }
-            _ => panic!("expected Ssh for create fifos"),
+            _ => panic!("expected Ssh for lock creation"),
         }
 
         // rsync (push)
-        assert!(matches!(&inv[5], Invocation::Rsync { .. }));
-
-        // hook injection (read + write — separate from push)
-        match &inv[7] {
-            Invocation::Ssh { command, .. } => {
-                assert!(command.contains("relocal-hook.sh"));
-            }
-            _ => panic!("expected Ssh for hook write"),
-        }
+        assert!(matches!(&inv[4], Invocation::Rsync { .. }));
     }
 
     #[test]
-    fn setup_stale_fifos_detected() {
+    fn setup_stale_session_detected() {
         let mock = MockRunner::new();
-        // check_fifos_exist -> found (stale session)
+        // lock check -> found (stale session)
         mock.add_response(MockResponse::Ok(String::new()));
 
         let result = setup(&mock, &test_config(), "stale-session", &repo_root(), false);
@@ -260,52 +240,18 @@ mod tests {
         assert!(err.to_string().contains("stale-session"));
         assert!(err.to_string().contains("relocal destroy"));
 
-        // Only the fifo check was issued — nothing else
-        let inv = mock.invocations();
-        assert_eq!(inv.len(), 1);
-    }
-
-    #[test]
-    fn cleanup_removes_fifos() {
-        let mock = MockRunner::new();
-        // remove_fifos
-        mock.add_response(MockResponse::Ok(String::new()));
-
-        cleanup(&mock, &test_config(), "s1").unwrap();
-
-        let inv = mock.invocations();
-        assert_eq!(inv.len(), 1);
-        match &inv[0] {
-            Invocation::Ssh { remote, command } => {
-                assert_eq!(remote, "user@host");
-                assert!(command.contains("rm -f"));
-                assert!(command.contains("s1-request"));
-                assert!(command.contains("s1-ack"));
-            }
-            _ => panic!("expected Ssh for fifo removal"),
-        }
-    }
-
-    #[test]
-    fn cleanup_failure_returns_error() {
-        let mock = MockRunner::new();
-        mock.add_response(MockResponse::Err("network down".into()));
-
-        let result = cleanup(&mock, &test_config(), "s1");
-        assert!(result.is_err());
+        // Only the lock check was issued
+        assert_eq!(mock.invocations().len(), 1);
     }
 
     #[test]
     fn setup_all_commands_target_correct_remote() {
         let mock = MockRunner::new();
-        mock.add_response(MockResponse::Fail(String::new())); // fifo check
+        mock.add_response(MockResponse::Fail(String::new())); // lock check
         mock.add_response(MockResponse::Ok(String::new())); // claude check
         mock.add_response(MockResponse::Ok(String::new())); // mkdir work dir
-        mock.add_response(MockResponse::Ok(String::new())); // mkdir fifos dir
-        mock.add_response(MockResponse::Ok(String::new())); // create fifos
+        mock.add_response(MockResponse::Ok(String::new())); // create lock
         mock.add_response(MockResponse::Ok(String::new())); // rsync (push)
-        mock.add_response(MockResponse::Fail(String::new())); // read settings (inject)
-        mock.add_response(MockResponse::Ok(String::new())); // write settings (inject)
 
         let config = Config::parse("remote = \"deploy@prod\"").unwrap();
         setup(&mock, &config, "s1", &repo_root(), false).unwrap();
@@ -326,19 +272,16 @@ mod tests {
     #[test]
     fn setup_verbose_passes_to_rsync() {
         let mock = MockRunner::new();
-        mock.add_response(MockResponse::Fail(String::new())); // fifo check
+        mock.add_response(MockResponse::Fail(String::new())); // lock check
         mock.add_response(MockResponse::Ok(String::new())); // claude check
         mock.add_response(MockResponse::Ok(String::new())); // mkdir work dir
-        mock.add_response(MockResponse::Ok(String::new())); // mkdir fifos dir
-        mock.add_response(MockResponse::Ok(String::new())); // create fifos
+        mock.add_response(MockResponse::Ok(String::new())); // create lock
         mock.add_response(MockResponse::Ok(String::new())); // rsync (push)
-        mock.add_response(MockResponse::Fail(String::new())); // read settings (inject)
-        mock.add_response(MockResponse::Ok(String::new())); // write settings (inject)
 
         setup(&mock, &test_config(), "s1", &repo_root(), true).unwrap();
 
         let inv = mock.invocations();
-        match &inv[5] {
+        match &inv[4] {
             Invocation::Rsync { args, .. } => {
                 assert!(args.contains(&"--progress".to_string()));
             }
@@ -349,7 +292,7 @@ mod tests {
     #[test]
     fn setup_fails_if_claude_not_installed() {
         let mock = MockRunner::new();
-        mock.add_response(MockResponse::Fail(String::new())); // fifo check (ok)
+        mock.add_response(MockResponse::Fail(String::new())); // lock check
         mock.add_response(MockResponse::Fail(String::new())); // claude check -> not found
 
         let result = setup(&mock, &test_config(), "s1", &repo_root(), false);
@@ -364,31 +307,32 @@ mod tests {
     #[test]
     fn setup_fails_if_mkdir_fails() {
         let mock = MockRunner::new();
-        mock.add_response(MockResponse::Fail(String::new())); // fifo check (ok)
+        mock.add_response(MockResponse::Fail(String::new())); // lock check
         mock.add_response(MockResponse::Ok(String::new())); // claude check
         mock.add_response(MockResponse::Err("permission denied".into())); // mkdir fails
 
         let result = setup(&mock, &test_config(), "s1", &repo_root(), false);
         assert!(result.is_err());
 
-        // fifo check + claude check + mkdir attempted
         let inv = mock.invocations();
         assert_eq!(inv.len(), 3);
     }
 
     #[test]
-    fn setup_fails_if_create_fifos_fails() {
+    fn cleanup_removes_lock_file() {
         let mock = MockRunner::new();
-        mock.add_response(MockResponse::Fail(String::new())); // fifo check
-        mock.add_response(MockResponse::Ok(String::new())); // claude check
-        mock.add_response(MockResponse::Ok(String::new())); // mkdir work dir
-        mock.add_response(MockResponse::Ok(String::new())); // mkdir fifos dir
-        mock.add_response(MockResponse::Err("mkfifo failed".into())); // create fifos
+        mock.add_response(MockResponse::Ok(String::new()));
 
-        let result = setup(&mock, &test_config(), "s1", &repo_root(), false);
-        assert!(result.is_err());
+        cleanup(&mock, &test_config(), "s1").unwrap();
 
         let inv = mock.invocations();
-        assert_eq!(inv.len(), 5);
+        assert_eq!(inv.len(), 1);
+        match &inv[0] {
+            Invocation::Ssh { command, .. } => {
+                assert!(command.contains("rm -f"));
+                assert!(command.contains(".locks/s1.lock"));
+            }
+            _ => panic!("expected Ssh for lock removal"),
+        }
     }
 }

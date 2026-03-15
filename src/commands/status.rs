@@ -1,8 +1,7 @@
 //! `relocal status [session-name]` — shows information about a session.
 //!
-//! Checks the remote for: working directory existence, Claude installation,
-//! and active FIFOs (indicating a running session). All checks are done via
-//! SSH through the [`CommandRunner`] trait.
+//! Checks the remote for: working directory existence and Claude installation.
+//! All checks are done via SSH through the [`CommandRunner`] trait.
 
 use crate::config::Config;
 use crate::error::Result;
@@ -36,20 +35,6 @@ pub fn run(runner: &dyn CommandRunner, config: &Config, session_name: &str) -> R
         }
     );
 
-    let fifos_exist = ssh::run_status_check(
-        runner,
-        &config.remote,
-        &ssh::check_fifos_exist(session_name),
-    )?;
-    eprintln!(
-        "FIFOs:      {}",
-        if fifos_exist {
-            "exist (session may be active)"
-        } else {
-            "not found"
-        }
-    );
-
     Ok(())
 }
 
@@ -63,19 +48,17 @@ mod tests {
     }
 
     #[test]
-    fn checks_all_three_conditions() {
+    fn checks_both_conditions() {
         let mock = MockRunner::new();
         // check_work_dir_exists
         mock.add_response(MockResponse::Ok(ssh::STATUS_CHECK_TRUE.into()));
         // check_claude_installed
         mock.add_response(MockResponse::Ok(ssh::STATUS_CHECK_TRUE.into()));
-        // check_fifos_exist
-        mock.add_response(MockResponse::Ok(ssh::STATUS_CHECK_FALSE.into()));
 
         run(&mock, &test_config(), "my-session").unwrap();
 
         let inv = mock.invocations();
-        assert_eq!(inv.len(), 3);
+        assert_eq!(inv.len(), 2);
 
         // All commands go to the right remote
         for i in &inv {
@@ -101,15 +84,6 @@ mod tests {
             }
             _ => panic!("expected Ssh"),
         }
-
-        // Third: fifos check
-        match &inv[2] {
-            Invocation::Ssh { command, .. } => {
-                assert!(command.contains("test -e"));
-                assert!(command.contains("my-session"));
-            }
-            _ => panic!("expected Ssh"),
-        }
     }
 
     #[test]
@@ -117,9 +91,7 @@ mod tests {
         let mock = MockRunner::new();
         mock.add_response(MockResponse::Ok(ssh::STATUS_CHECK_TRUE.into()));
         mock.add_response(MockResponse::Ok(ssh::STATUS_CHECK_TRUE.into()));
-        mock.add_response(MockResponse::Ok(ssh::STATUS_CHECK_TRUE.into()));
 
-        // Should not error even when FIFOs exist
         run(&mock, &test_config(), "s1").unwrap();
     }
 
@@ -128,9 +100,7 @@ mod tests {
         let mock = MockRunner::new();
         mock.add_response(MockResponse::Ok(ssh::STATUS_CHECK_FALSE.into()));
         mock.add_response(MockResponse::Ok(ssh::STATUS_CHECK_FALSE.into()));
-        mock.add_response(MockResponse::Ok(ssh::STATUS_CHECK_FALSE.into()));
 
-        // Should not error when nothing exists
         run(&mock, &test_config(), "s1").unwrap();
     }
 }

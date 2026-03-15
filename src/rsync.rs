@@ -60,8 +60,8 @@ impl RsyncParams {
 
 /// Builds the complete rsync argument list for a sync operation.
 ///
-/// The `.claude/` directory is excluded entirely — hook configuration is managed
-/// separately via SSH (see [`reinject_hooks`](crate::commands::sync::reinject_hooks)).
+/// The `.claude/` directory is excluded entirely — the remote manages its own
+/// `.claude/` independently.
 pub fn build_rsync_args(
     config: &Config,
     direction: Direction,
@@ -87,7 +87,7 @@ pub fn build_rsync_args(
         args.push(format!("--exclude={pattern}"));
     }
 
-    // Exclude .claude/ entirely — hooks are managed via SSH, not rsync.
+    // Exclude .claude/ entirely — remote manages its own independently.
     args.push("--exclude=.claude/".to_string());
 
     // Verbose mode adds progress

@@ -34,7 +34,7 @@ pub enum Error {
     #[error("remote error ({remote}): {message}")]
     Remote { remote: String, message: String },
 
-    #[error("stale session {session}: FIFOs already exist. Another session may be running. Use `relocal destroy {session}` if the previous session crashed.")]
+    #[error("session {session} appears to be active (lock file exists). If the previous session crashed, run `relocal destroy {session}` to clean up.")]
     StaleSession { session: String },
 
     #[error("refusing to pull: remote session {session} failed git fsck (not a git repo or repository is corrupted).\nStderr: {stderr}")]
