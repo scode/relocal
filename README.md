@@ -1,6 +1,11 @@
 # relocal
 
-> **WARNING: EARLY PROTOTYPE — ROUGH EDGES EXPECTED.**
+> **WARNING: EARLY PROTOTYPE — EXPECT BREAKING CHANGES.**
+>
+> relocal is under active development. Commands, config format, and sync
+> behavior may change without notice between commits. If you're using it,
+> watch the [changelog](https://github.com/scode/relocal/commits/main)
+> until this notice is removed.
 >
 > Bugs or misconfiguration can delete local files. There are safety checks
 > but the tool has not been battle-tested.
