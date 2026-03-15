@@ -105,7 +105,12 @@ following steps in order:
    npm install -g @anthropic-ai/claude-code
    ```
 
-6. **Claude authentication**: Runs `claude login` interactively if Claude is not already authenticated. The user follows
+6. **Codex CLI**: Installs via npm if `codex` is not already on PATH.
+   ```
+   npm install -g @openai/codex
+   ```
+
+7. **Claude authentication**: Runs `claude login` interactively if Claude is not already authenticated. The user follows
    the normal login flow (supports both API key and subscription-based auth). Since the SSH session has a terminal
    attached, the interactive login works as normal.
 
@@ -193,7 +198,7 @@ Prompts for confirmation before deleting.
 ### `relocal remote nuke`
 
 Deletes the entire `~/relocal/` directory on the remote, including all sessions. Does **not** uninstall APT packages,
-Rust, or Claude Code.
+Rust, Claude Code, or Codex.
 
 This is a development/upgrade escape hatch — intended for when developing or upgrading relocal itself and you want a
 clean slate to re-run `relocal remote install` and start fresh. Not part of normal workflow.
@@ -476,8 +481,7 @@ completion (including on panic, via `Drop` guard).
 #### `relocal remote install`
 
 - Idempotent: re-run does not fail or corrupt state.
-- APT/rustup/Claude install steps are tested only for the already-installed case (verifying idempotency without
-  uninstalling).
+- Each install step is tested for both the already-installed (skip) and absent (install) cases, plus install failure.
 
 #### `relocal list`
 
