@@ -331,6 +331,21 @@ mod tests {
     }
 
     #[test]
+    fn setup_fails_if_lock_creation_fails() {
+        let mock = MockRunner::new();
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_FALSE.into())); // lock check
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_TRUE.into())); // claude check
+        mock.add_response(MockResponse::Ok(String::new())); // mkdir succeeds
+        mock.add_response(MockResponse::Fail("noclobber: file exists".into())); // lock create fails
+
+        let result = setup(&mock, &test_config(), "s1", &repo_root(), false);
+        assert!(result.is_err());
+
+        let inv = mock.invocations();
+        assert_eq!(inv.len(), 4);
+    }
+
+    #[test]
     fn cleanup_removes_lock_file() {
         let mock = MockRunner::new();
         mock.add_response(MockResponse::Ok(String::new()));

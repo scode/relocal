@@ -84,4 +84,13 @@ mod tests {
             _ => panic!("expected Ssh"),
         }
     }
+
+    #[test]
+    fn rm_failure_returns_error() {
+        let mock = MockRunner::new();
+        mock.add_response(MockResponse::Fail("permission denied".into()));
+
+        let result = run(&mock, &test_config(), false);
+        assert!(result.is_err());
+    }
 }

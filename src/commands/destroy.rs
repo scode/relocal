@@ -132,6 +132,27 @@ mod tests {
     }
 
     #[test]
+    fn rm_work_dir_failure_returns_error() {
+        let mock = MockRunner::new();
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_TRUE.into())); // dir check
+        mock.add_response(MockResponse::Fail("permission denied".into())); // rm fails
+
+        let result = run(&mock, &test_config(), "s1", false);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rm_lock_failure_returns_error() {
+        let mock = MockRunner::new();
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_TRUE.into())); // dir check
+        mock.add_response(MockResponse::Ok(String::new())); // rm work dir
+        mock.add_response(MockResponse::Fail("permission denied".into())); // rm lock fails
+
+        let result = run(&mock, &test_config(), "s1", false);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn nonexistent_session_returns_error() {
         let mock = MockRunner::new();
         // dir check -> not found
