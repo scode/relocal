@@ -94,10 +94,16 @@ pub fn setup(
     repo_root: &Path,
     verbose: bool,
 ) -> Result<()> {
-    // 1. Check for stale session
+    // 1. Check for stale session (uses run_status_check to distinguish SSH
+    //    transport errors from "lock file not found" — an SSH failure must not
+    //    be misread as "no lock exists")
     info!("Checking for stale session...");
-    let lock_check = runner.run_ssh(&config.remote, &ssh::check_lock_file_exists(session_name))?;
-    if lock_check.status.success() {
+    let lock_exists = ssh::run_status_check(
+        runner,
+        &config.remote,
+        &ssh::check_lock_file_exists(session_name),
+    )?;
+    if lock_exists {
         return Err(Error::StaleSession {
             session: session_name.to_string(),
         });
@@ -105,8 +111,9 @@ pub fn setup(
 
     // 2. Check Claude is installed on remote
     info!("Checking Claude installation...");
-    let claude_check = runner.run_ssh(&config.remote, &ssh::check_claude_installed())?;
-    if !claude_check.status.success() {
+    let claude_installed =
+        ssh::run_status_check(runner, &config.remote, &ssh::check_claude_installed())?;
+    if !claude_installed {
         return Err(Error::Remote {
             remote: config.remote.clone(),
             message: "Claude Code is not installed. Run `relocal remote install` first."
@@ -116,8 +123,12 @@ pub fn setup(
 
     // 3. Create remote working directory and acquire lock
     info!("Creating remote working directory...");
-    runner.run_ssh(&config.remote, &ssh::mkdir_work_dir(session_name))?;
-    runner.run_ssh(&config.remote, &ssh::create_lock_file(session_name))?;
+    runner
+        .run_ssh(&config.remote, &ssh::mkdir_work_dir(session_name))?
+        .check("mkdir")?;
+    runner
+        .run_ssh(&config.remote, &ssh::create_lock_file(session_name))?
+        .check("create lock file")?;
 
     // 4. Initial push
     sync_push(runner, config, session_name, repo_root, verbose)?;
@@ -156,6 +167,7 @@ fn print_dirty_shutdown_message(session_name: &str, config: &Config) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ssh::{STATUS_CHECK_FALSE, STATUS_CHECK_TRUE};
     use crate::test_support::{Invocation, MockResponse, MockRunner};
     use std::path::PathBuf;
 
@@ -170,10 +182,10 @@ mod tests {
     #[test]
     fn setup_full_sequence() {
         let mock = MockRunner::new();
-        // 1. lock check -> not found (good)
-        mock.add_response(MockResponse::Fail(String::new()));
-        // 2. check_claude_installed -> found
-        mock.add_response(MockResponse::Ok("/usr/local/bin/claude\n".into()));
+        // 1. lock check (wrapped by run_status_check) -> not found
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_FALSE.into()));
+        // 2. claude check (wrapped by run_status_check) -> found
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_TRUE.into()));
         // 3. mkdir_work_dir
         mock.add_response(MockResponse::Ok(String::new()));
         // 3b. create_lock_file
@@ -187,7 +199,7 @@ mod tests {
         // lock_check(1) + claude_check(1) + mkdir(1) + lock_create(1) + rsync(1) = 5
         assert_eq!(inv.len(), 5);
 
-        // lock check
+        // lock check (wrapped)
         match &inv[0] {
             Invocation::Ssh { command, .. } => {
                 assert!(command.contains("test -e"));
@@ -196,7 +208,7 @@ mod tests {
             _ => panic!("expected Ssh for lock check"),
         }
 
-        // claude check
+        // claude check (wrapped)
         match &inv[1] {
             Invocation::Ssh { command, .. } => {
                 assert!(command.contains("command -v claude"));
@@ -230,7 +242,7 @@ mod tests {
     fn setup_stale_session_detected() {
         let mock = MockRunner::new();
         // lock check -> found (stale session)
-        mock.add_response(MockResponse::Ok(String::new()));
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_TRUE.into()));
 
         let result = setup(&mock, &test_config(), "stale-session", &repo_root(), false);
 
@@ -247,8 +259,8 @@ mod tests {
     #[test]
     fn setup_all_commands_target_correct_remote() {
         let mock = MockRunner::new();
-        mock.add_response(MockResponse::Fail(String::new())); // lock check
-        mock.add_response(MockResponse::Ok(String::new())); // claude check
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_FALSE.into())); // lock check
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_TRUE.into())); // claude check
         mock.add_response(MockResponse::Ok(String::new())); // mkdir work dir
         mock.add_response(MockResponse::Ok(String::new())); // create lock
         mock.add_response(MockResponse::Ok(String::new())); // rsync (push)
@@ -272,8 +284,8 @@ mod tests {
     #[test]
     fn setup_verbose_passes_to_rsync() {
         let mock = MockRunner::new();
-        mock.add_response(MockResponse::Fail(String::new())); // lock check
-        mock.add_response(MockResponse::Ok(String::new())); // claude check
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_FALSE.into())); // lock check
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_TRUE.into())); // claude check
         mock.add_response(MockResponse::Ok(String::new())); // mkdir work dir
         mock.add_response(MockResponse::Ok(String::new())); // create lock
         mock.add_response(MockResponse::Ok(String::new())); // rsync (push)
@@ -292,8 +304,8 @@ mod tests {
     #[test]
     fn setup_fails_if_claude_not_installed() {
         let mock = MockRunner::new();
-        mock.add_response(MockResponse::Fail(String::new())); // lock check
-        mock.add_response(MockResponse::Fail(String::new())); // claude check -> not found
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_FALSE.into())); // lock check
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_FALSE.into())); // claude check -> not found
 
         let result = setup(&mock, &test_config(), "s1", &repo_root(), false);
         assert!(result.is_err());
@@ -307,9 +319,9 @@ mod tests {
     #[test]
     fn setup_fails_if_mkdir_fails() {
         let mock = MockRunner::new();
-        mock.add_response(MockResponse::Fail(String::new())); // lock check
-        mock.add_response(MockResponse::Ok(String::new())); // claude check
-        mock.add_response(MockResponse::Err("permission denied".into())); // mkdir fails
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_FALSE.into())); // lock check
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_TRUE.into())); // claude check
+        mock.add_response(MockResponse::Fail("permission denied".into())); // mkdir fails
 
         let result = setup(&mock, &test_config(), "s1", &repo_root(), false);
         assert!(result.is_err());

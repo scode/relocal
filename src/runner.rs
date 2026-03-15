@@ -35,6 +35,23 @@ pub struct CommandOutput {
     pub status: ExitStatus,
 }
 
+impl CommandOutput {
+    /// Returns `Ok(self)` if the command exited successfully, or an error with
+    /// the command name and stderr if it failed.
+    ///
+    /// Use this at call sites that must not silently ignore non-zero exit codes.
+    pub fn check(self, command: &str) -> crate::error::Result<Self> {
+        if self.status.success() {
+            Ok(self)
+        } else {
+            Err(crate::error::Error::CommandFailed {
+                command: command.to_string(),
+                message: self.stderr,
+            })
+        }
+    }
+}
+
 /// Abstraction over shelling out to ssh, rsync, and local processes.
 ///
 /// Each method corresponds to a distinct invocation pattern:
@@ -200,10 +217,42 @@ impl CommandRunner for ProcessRunner {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::ExitStatusExt;
     use std::path::PathBuf;
+    use std::process::ExitStatus;
 
     fn make_params(direction: Direction, local_path: PathBuf) -> RsyncParams {
         RsyncParams::for_test(vec!["--help".to_string()], direction, local_path)
+    }
+
+    #[test]
+    fn check_success_returns_output() {
+        let output = CommandOutput {
+            stdout: "hello".to_string(),
+            stderr: String::new(),
+            status: ExitStatus::from_raw(0),
+        };
+        let checked = output.check("test-cmd").unwrap();
+        assert_eq!(checked.stdout, "hello");
+    }
+
+    #[test]
+    fn check_failure_returns_error_with_stderr() {
+        let output = CommandOutput {
+            stdout: String::new(),
+            stderr: "something broke".to_string(),
+            status: ExitStatus::from_raw(256), // exit code 1
+        };
+        let err = output.check("my-command").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("my-command"),
+            "error should name the command: {msg}"
+        );
+        assert!(
+            msg.contains("something broke"),
+            "error should include stderr: {msg}"
+        );
     }
 
     #[test]

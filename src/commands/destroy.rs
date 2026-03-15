@@ -20,9 +20,14 @@ pub fn run(
     session_name: &str,
     confirm: bool,
 ) -> Result<()> {
-    // Check the session exists
-    let dir_check = runner.run_ssh(&config.remote, &ssh::check_work_dir_exists(session_name))?;
-    if !dir_check.status.success() {
+    // Check the session exists (use run_status_check to distinguish SSH
+    // transport errors from "directory not found")
+    let dir_exists = ssh::run_status_check(
+        runner,
+        &config.remote,
+        &ssh::check_work_dir_exists(session_name),
+    )?;
+    if !dir_exists {
         return Err(Error::Remote {
             remote: config.remote.clone(),
             message: format!("session '{session_name}' not found. No working directory exists."),
@@ -48,10 +53,14 @@ pub fn run(
     }
 
     info!("Removing remote working directory...");
-    runner.run_ssh(&config.remote, &ssh::rm_work_dir(session_name))?;
+    runner
+        .run_ssh(&config.remote, &ssh::rm_work_dir(session_name))?
+        .check("rm work dir")?;
 
     info!("Removing lock file...");
-    runner.run_ssh(&config.remote, &ssh::remove_lock_file(session_name))?;
+    runner
+        .run_ssh(&config.remote, &ssh::remove_lock_file(session_name))?
+        .check("rm lock file")?;
 
     eprintln!("Session '{session_name}' destroyed.");
     Ok(())
@@ -60,6 +69,7 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ssh::{STATUS_CHECK_FALSE, STATUS_CHECK_TRUE};
     use crate::test_support::{Invocation, MockResponse, MockRunner};
 
     fn test_config() -> Config {
@@ -69,8 +79,8 @@ mod tests {
     #[test]
     fn removes_working_dir_and_lock() {
         let mock = MockRunner::new();
-        // dir check -> exists
-        mock.add_response(MockResponse::Ok(String::new()));
+        // dir check (wrapped by run_status_check) -> exists
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_TRUE.into()));
         // rm work dir
         mock.add_response(MockResponse::Ok(String::new()));
         // rm lock file
@@ -103,7 +113,7 @@ mod tests {
     fn targets_correct_remote() {
         let mock = MockRunner::new();
         // dir check -> exists
-        mock.add_response(MockResponse::Ok(String::new()));
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_TRUE.into()));
         // rm work dir
         mock.add_response(MockResponse::Ok(String::new()));
         // rm lock file
@@ -125,7 +135,7 @@ mod tests {
     fn nonexistent_session_returns_error() {
         let mock = MockRunner::new();
         // dir check -> not found
-        mock.add_response(MockResponse::Fail(String::new()));
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_FALSE.into()));
 
         let result = run(&mock, &test_config(), "no-such-session", false);
         assert!(result.is_err());
