@@ -172,6 +172,25 @@ pub fn start_claude_session(session: &str, extra_args: &[String]) -> String {
     cmd
 }
 
+/// Command to check whether `codex` is on PATH.
+pub fn check_codex_installed() -> String {
+    "command -v codex".to_string()
+}
+
+/// Command to launch an interactive Codex session in the working directory.
+///
+/// Any extra arguments are appended after `--yolo`,
+/// allowing the caller to pass flags through to `codex`.
+pub fn start_codex_session(session: &str, extra_args: &[String]) -> String {
+    let mut cmd = format!("cd {} && codex --yolo", remote_work_dir(session));
+    for arg in extra_args {
+        cmd.push(' ');
+        let quoted: String = arg.as_str().quoted(Bash);
+        cmd.push_str(&quoted);
+    }
+    cmd
+}
+
 /// Manages a persistent SSH ControlMaster connection.
 ///
 /// All SSH and rsync commands during a session can share this connection,
@@ -373,6 +392,26 @@ mod tests {
         let cmd = start_claude_session("s1", &args);
         assert!(cmd.contains("claude --dangerously-skip-permissions"));
         assert!(cmd.ends_with(" --debug --resume"));
+    }
+
+    #[test]
+    fn check_codex_installed_format() {
+        assert_eq!(check_codex_installed(), "command -v codex");
+    }
+
+    #[test]
+    fn start_codex_session_format() {
+        let cmd = start_codex_session("s1", &[]);
+        assert!(cmd.contains("cd ~/relocal/s1"));
+        assert!(cmd.contains("codex --yolo"));
+    }
+
+    #[test]
+    fn start_codex_session_with_extra_args() {
+        let args = vec!["--model".to_string(), "o3".to_string()];
+        let cmd = start_codex_session("s1", &args);
+        assert!(cmd.contains("codex --yolo"));
+        assert!(cmd.ends_with(" --model o3"));
     }
 
     #[test]

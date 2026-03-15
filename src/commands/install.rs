@@ -1,7 +1,7 @@
 //! `relocal remote install` — installs the full environment on the remote host.
 //!
-//! Performs seven idempotent steps: APT packages, Homebrew, gh, Rust, Claude Code,
-//! Codex CLI, and Claude auth. Safe to re-run at any time.
+//! Performs eight idempotent steps: APT packages, Homebrew, gh, Rust, Claude Code,
+//! Codex CLI, Claude auth, and Codex auth. Safe to re-run at any time.
 
 use tracing::info;
 
@@ -43,6 +43,7 @@ pub fn run(runner: &dyn CommandRunner, config: &Config) -> Result<()> {
         "npm install -g @openai/codex",
     )?;
     authenticate_claude(runner, config)?;
+    authenticate_codex(runner, config)?;
 
     info!("Remote installation complete.");
     Ok(())
@@ -119,6 +120,24 @@ fn authenticate_claude(runner: &dyn CommandRunner, config: &Config) -> Result<()
     if !status.success() {
         return Err(crate::error::Error::CommandFailed {
             command: "claude login".to_string(),
+            message: "interactive login failed".to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn authenticate_codex(runner: &dyn CommandRunner, config: &Config) -> Result<()> {
+    info!("Checking Codex authentication...");
+    if ssh::run_status_check(runner, &config.remote, "test -e ~/.codex/auth.json")? {
+        info!("Codex already authenticated, skipping.");
+        return Ok(());
+    }
+
+    info!("Running codex login --device-auth (interactive)...");
+    let status = runner.run_ssh_interactive(&config.remote, "codex login --device-auth")?;
+    if !status.success() {
+        return Err(crate::error::Error::CommandFailed {
+            command: "codex login".to_string(),
             message: "interactive login failed".to_string(),
         });
     }
@@ -378,6 +397,59 @@ apt_packages = ["libssl-dev", "pkg-config"]
     }
 
     #[test]
+    fn codex_auth_skipped_when_authenticated() {
+        let mock = MockRunner::new();
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_TRUE.into()));
+
+        authenticate_codex(&mock, &test_config()).unwrap();
+
+        let inv = mock.invocations();
+        assert_eq!(inv.len(), 1);
+        match &inv[0] {
+            Invocation::Ssh { command, .. } => {
+                assert!(command.contains("test -e ~/.codex/auth.json"));
+            }
+            _ => panic!("expected Ssh"),
+        }
+    }
+
+    #[test]
+    fn codex_auth_runs_login_when_not_authenticated() {
+        let mock = MockRunner::new();
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_FALSE.into()));
+        mock.add_response(MockResponse::Ok(String::new()));
+
+        authenticate_codex(&mock, &test_config()).unwrap();
+
+        let inv = mock.invocations();
+        assert_eq!(inv.len(), 2);
+        assert!(
+            matches!(&inv[1], Invocation::SshInteractive { command, .. } if command.contains("codex login --device-auth"))
+        );
+    }
+
+    #[test]
+    fn codex_auth_login_failure_returns_error() {
+        let mock = MockRunner::new();
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_FALSE.into())); // not authenticated
+        mock.add_response(MockResponse::Fail(String::new())); // login fails
+
+        let result = authenticate_codex(&mock, &test_config());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("codex login"));
+    }
+
+    #[test]
+    fn codex_auth_ssh_transport_failure_propagates() {
+        let mock = MockRunner::new();
+        mock.add_response(MockResponse::Fail("ssh: connect timeout".into()));
+
+        let result = authenticate_codex(&mock, &test_config());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("status probe"));
+    }
+
+    #[test]
     fn apt_install_failure_returns_error() {
         let mock = MockRunner::new();
         mock.add_response(MockResponse::Fail("E: Unable to locate package".into()));
@@ -418,7 +490,10 @@ apt_packages = ["libssl-dev", "pkg-config"]
         // 6. codex check -> absent, install
         mock.add_response(MockResponse::Ok(STATUS_CHECK_FALSE.into()));
         mock.add_response(MockResponse::Ok(String::new()));
-        // 7. auth check -> not authenticated, login succeeds
+        // 7. claude auth check -> not authenticated, login succeeds
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_FALSE.into()));
+        mock.add_response(MockResponse::Ok(String::new()));
+        // 8. codex auth check -> not authenticated, login succeeds
         mock.add_response(MockResponse::Ok(STATUS_CHECK_FALSE.into()));
         mock.add_response(MockResponse::Ok(String::new()));
 
@@ -442,6 +517,8 @@ apt_packages = ["libssl-dev", "pkg-config"]
         assert!(cmds
             .iter()
             .any(|c| c.contains("npm install -g @openai/codex")));
+        assert!(cmds.iter().any(|c| c.contains("claude login")));
+        assert!(cmds.iter().any(|c| c.contains("codex login --device-auth")));
     }
 
     #[test]
@@ -459,14 +536,16 @@ apt_packages = ["libssl-dev", "pkg-config"]
         mock.add_response(MockResponse::Ok(STATUS_CHECK_TRUE.into()));
         // 6. codex check -> present
         mock.add_response(MockResponse::Ok(STATUS_CHECK_TRUE.into()));
-        // 7. auth check -> authenticated
+        // 7. claude auth check -> authenticated
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_TRUE.into()));
+        // 8. codex auth check -> authenticated
         mock.add_response(MockResponse::Ok(STATUS_CHECK_TRUE.into()));
 
         run(&mock, &test_config()).unwrap();
 
         let inv = mock.invocations();
-        // APT(1) + brew check(1) + gh check(1) + rustup check(1) + claude check(1) + codex check(1) + auth check(1) = 7
-        assert_eq!(inv.len(), 7);
+        // APT(1) + brew(1) + gh(1) + rustup(1) + claude(1) + codex(1) + claude auth(1) + codex auth(1) = 8
+        assert_eq!(inv.len(), 8);
 
         // All commands go to the right remote
         for i in &inv {

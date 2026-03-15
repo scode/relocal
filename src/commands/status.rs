@@ -1,6 +1,6 @@
 //! `relocal status [session-name]` — shows information about a session.
 //!
-//! Checks the remote for: working directory existence and Claude installation.
+//! Checks the remote for: working directory existence and tool installation.
 //! All checks are done via SSH through the [`CommandRunner`] trait.
 
 use crate::config::Config;
@@ -35,6 +35,17 @@ pub fn run(runner: &dyn CommandRunner, config: &Config, session_name: &str) -> R
         }
     );
 
+    let codex_installed =
+        ssh::run_status_check(runner, &config.remote, &ssh::check_codex_installed())?;
+    eprintln!(
+        "Codex:      {}",
+        if codex_installed {
+            "installed"
+        } else {
+            "not installed"
+        }
+    );
+
     Ok(())
 }
 
@@ -48,19 +59,17 @@ mod tests {
     }
 
     #[test]
-    fn checks_both_conditions() {
+    fn checks_all_conditions() {
         let mock = MockRunner::new();
-        // check_work_dir_exists
-        mock.add_response(MockResponse::Ok(ssh::STATUS_CHECK_TRUE.into()));
-        // check_claude_installed
-        mock.add_response(MockResponse::Ok(ssh::STATUS_CHECK_TRUE.into()));
+        mock.add_response(MockResponse::Ok(ssh::STATUS_CHECK_TRUE.into())); // dir
+        mock.add_response(MockResponse::Ok(ssh::STATUS_CHECK_TRUE.into())); // claude
+        mock.add_response(MockResponse::Ok(ssh::STATUS_CHECK_TRUE.into())); // codex
 
         run(&mock, &test_config(), "my-session").unwrap();
 
         let inv = mock.invocations();
-        assert_eq!(inv.len(), 2);
+        assert_eq!(inv.len(), 3);
 
-        // All commands go to the right remote
         for i in &inv {
             match i {
                 Invocation::Ssh { remote, .. } => assert_eq!(remote, "user@host"),
@@ -68,7 +77,6 @@ mod tests {
             }
         }
 
-        // First: directory check
         match &inv[0] {
             Invocation::Ssh { command, .. } => {
                 assert!(command.contains("test -d"));
@@ -77,10 +85,16 @@ mod tests {
             _ => panic!("expected Ssh"),
         }
 
-        // Second: claude check
         match &inv[1] {
             Invocation::Ssh { command, .. } => {
                 assert!(command.contains("command -v claude"));
+            }
+            _ => panic!("expected Ssh"),
+        }
+
+        match &inv[2] {
+            Invocation::Ssh { command, .. } => {
+                assert!(command.contains("command -v codex"));
             }
             _ => panic!("expected Ssh"),
         }
@@ -91,6 +105,7 @@ mod tests {
         let mock = MockRunner::new();
         mock.add_response(MockResponse::Ok(ssh::STATUS_CHECK_TRUE.into()));
         mock.add_response(MockResponse::Ok(ssh::STATUS_CHECK_TRUE.into()));
+        mock.add_response(MockResponse::Ok(ssh::STATUS_CHECK_TRUE.into()));
 
         run(&mock, &test_config(), "s1").unwrap();
     }
@@ -98,6 +113,7 @@ mod tests {
     #[test]
     fn reports_when_nothing_exists() {
         let mock = MockRunner::new();
+        mock.add_response(MockResponse::Ok(ssh::STATUS_CHECK_FALSE.into()));
         mock.add_response(MockResponse::Ok(ssh::STATUS_CHECK_FALSE.into()));
         mock.add_response(MockResponse::Ok(ssh::STATUS_CHECK_FALSE.into()));
 
