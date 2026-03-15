@@ -8,6 +8,7 @@ use tracing::info;
 use crate::config::Config;
 use crate::error::Result;
 use crate::runner::CommandRunner;
+use crate::ssh;
 
 /// Runs all remote installation steps in order.
 pub fn run(runner: &dyn CommandRunner, config: &Config) -> Result<()> {
@@ -65,8 +66,7 @@ fn install_apt_packages(runner: &dyn CommandRunner, config: &Config) -> Result<(
 
 fn install_homebrew(runner: &dyn CommandRunner, config: &Config) -> Result<()> {
     info!("Checking for Homebrew...");
-    let check = runner.run_ssh(&config.remote, "command -v brew")?;
-    if check.status.success() {
+    if ssh::run_status_check(runner, &config.remote, "command -v brew")? {
         info!("Homebrew already installed, skipping.");
         return Ok(());
     }
@@ -95,8 +95,7 @@ fn install_if_absent(
     install_cmd: &str,
 ) -> Result<()> {
     info!("Checking for {name}...");
-    let check = runner.run_ssh(remote, &format!("command -v {binary}"))?;
-    if check.status.success() {
+    if ssh::run_status_check(runner, remote, &format!("command -v {binary}"))? {
         info!("{name} already installed, skipping.");
         return Ok(());
     }
@@ -110,8 +109,7 @@ fn install_if_absent(
 
 fn authenticate_claude(runner: &dyn CommandRunner, config: &Config) -> Result<()> {
     info!("Checking Claude authentication...");
-    let check = runner.run_ssh(&config.remote, "claude auth status")?;
-    if check.status.success() {
+    if ssh::run_status_check(runner, &config.remote, "claude auth status")? {
         info!("Claude already authenticated, skipping.");
         return Ok(());
     }
@@ -130,6 +128,7 @@ fn authenticate_claude(runner: &dyn CommandRunner, config: &Config) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ssh::{STATUS_CHECK_FALSE, STATUS_CHECK_TRUE};
     use crate::test_support::{Invocation, MockResponse, MockRunner};
 
     fn test_config() -> Config {
@@ -188,9 +187,7 @@ apt_packages = ["libssl-dev", "pkg-config"]
     #[test]
     fn homebrew_skipped_when_present() {
         let mock = MockRunner::new();
-        mock.add_response(MockResponse::Ok(
-            "/home/linuxbrew/.linuxbrew/bin/brew\n".into(),
-        ));
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_TRUE.into()));
 
         install_homebrew(&mock, &test_config()).unwrap();
 
@@ -207,7 +204,7 @@ apt_packages = ["libssl-dev", "pkg-config"]
     #[test]
     fn homebrew_installed_when_absent() {
         let mock = MockRunner::new();
-        mock.add_response(MockResponse::Fail(String::new())); // check -> not found
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_FALSE.into())); // check -> not found
         mock.add_response(MockResponse::Ok(String::new())); // install
         mock.add_response(MockResponse::Ok(String::new())); // PATH setup
 
@@ -234,7 +231,7 @@ apt_packages = ["libssl-dev", "pkg-config"]
     #[test]
     fn homebrew_path_setup_failure_returns_error() {
         let mock = MockRunner::new();
-        mock.add_response(MockResponse::Fail(String::new())); // check -> not found
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_FALSE.into())); // check -> not found
         mock.add_response(MockResponse::Ok(String::new())); // install succeeds
         mock.add_response(MockResponse::Fail("permission denied".into())); // PATH setup fails
 
@@ -243,9 +240,19 @@ apt_packages = ["libssl-dev", "pkg-config"]
     }
 
     #[test]
+    fn homebrew_ssh_transport_failure_propagates() {
+        let mock = MockRunner::new();
+        mock.add_response(MockResponse::Fail("ssh: connect timeout".into()));
+
+        let result = install_homebrew(&mock, &test_config());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("status probe"));
+    }
+
+    #[test]
     fn install_if_absent_skips_when_present() {
         let mock = MockRunner::new();
-        mock.add_response(MockResponse::Ok("/usr/local/bin/mytool\n".into()));
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_TRUE.into()));
 
         install_if_absent(
             &mock,
@@ -269,7 +276,7 @@ apt_packages = ["libssl-dev", "pkg-config"]
     #[test]
     fn install_if_absent_installs_when_missing() {
         let mock = MockRunner::new();
-        mock.add_response(MockResponse::Fail(String::new()));
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_FALSE.into()));
         mock.add_response(MockResponse::Ok(String::new()));
 
         install_if_absent(
@@ -294,7 +301,7 @@ apt_packages = ["libssl-dev", "pkg-config"]
     #[test]
     fn install_if_absent_failure_returns_error() {
         let mock = MockRunner::new();
-        mock.add_response(MockResponse::Fail(String::new()));
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_FALSE.into()));
         mock.add_response(MockResponse::Fail("install failed".into()));
 
         let result = install_if_absent(
@@ -308,9 +315,25 @@ apt_packages = ["libssl-dev", "pkg-config"]
     }
 
     #[test]
+    fn install_if_absent_ssh_transport_failure_propagates() {
+        let mock = MockRunner::new();
+        mock.add_response(MockResponse::Fail("ssh: connect timeout".into()));
+
+        let result = install_if_absent(
+            &mock,
+            "user@host",
+            "MyTool",
+            "mytool",
+            "brew install mytool",
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("status probe"));
+    }
+
+    #[test]
     fn claude_auth_skipped_when_authenticated() {
         let mock = MockRunner::new();
-        mock.add_response(MockResponse::Ok("Authenticated".into()));
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_TRUE.into()));
 
         authenticate_claude(&mock, &test_config()).unwrap();
 
@@ -321,7 +344,7 @@ apt_packages = ["libssl-dev", "pkg-config"]
     #[test]
     fn claude_auth_runs_login_when_not_authenticated() {
         let mock = MockRunner::new();
-        mock.add_response(MockResponse::Fail(String::new()));
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_FALSE.into()));
         mock.add_response(MockResponse::Ok(String::new()));
 
         authenticate_claude(&mock, &test_config()).unwrap();
@@ -334,9 +357,19 @@ apt_packages = ["libssl-dev", "pkg-config"]
     }
 
     #[test]
+    fn claude_auth_ssh_transport_failure_propagates() {
+        let mock = MockRunner::new();
+        mock.add_response(MockResponse::Fail("ssh: connect timeout".into()));
+
+        let result = authenticate_claude(&mock, &test_config());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("status probe"));
+    }
+
+    #[test]
     fn claude_auth_login_failure_returns_error() {
         let mock = MockRunner::new();
-        mock.add_response(MockResponse::Fail(String::new())); // not authenticated
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_FALSE.into())); // not authenticated
         mock.add_response(MockResponse::Fail(String::new())); // login fails
 
         let result = authenticate_claude(&mock, &test_config());
@@ -357,7 +390,7 @@ apt_packages = ["libssl-dev", "pkg-config"]
     #[test]
     fn homebrew_install_failure_returns_error() {
         let mock = MockRunner::new();
-        mock.add_response(MockResponse::Fail(String::new())); // check -> not found
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_FALSE.into())); // check -> not found
         mock.add_response(MockResponse::Fail("curl failed".into())); // install fails
 
         let result = install_homebrew(&mock, &test_config());
@@ -370,23 +403,23 @@ apt_packages = ["libssl-dev", "pkg-config"]
         // 1. APT
         mock.add_response(MockResponse::Ok(String::new()));
         // 2. brew check -> absent, install, PATH setup
-        mock.add_response(MockResponse::Fail(String::new()));
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_FALSE.into()));
         mock.add_response(MockResponse::Ok(String::new()));
         mock.add_response(MockResponse::Ok(String::new()));
         // 3. gh check -> absent, install
-        mock.add_response(MockResponse::Fail(String::new()));
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_FALSE.into()));
         mock.add_response(MockResponse::Ok(String::new()));
         // 4. rustup check -> absent, install
-        mock.add_response(MockResponse::Fail(String::new()));
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_FALSE.into()));
         mock.add_response(MockResponse::Ok(String::new()));
         // 5. claude check -> absent, install
-        mock.add_response(MockResponse::Fail(String::new()));
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_FALSE.into()));
         mock.add_response(MockResponse::Ok(String::new()));
         // 6. codex check -> absent, install
-        mock.add_response(MockResponse::Fail(String::new()));
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_FALSE.into()));
         mock.add_response(MockResponse::Ok(String::new()));
         // 7. auth check -> not authenticated, login succeeds
-        mock.add_response(MockResponse::Fail(String::new()));
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_FALSE.into()));
         mock.add_response(MockResponse::Ok(String::new()));
 
         run(&mock, &test_config()).unwrap();
@@ -417,17 +450,17 @@ apt_packages = ["libssl-dev", "pkg-config"]
         // 1. APT
         mock.add_response(MockResponse::Ok(String::new()));
         // 2. brew check -> present
-        mock.add_response(MockResponse::Ok("brew".into()));
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_TRUE.into()));
         // 3. gh check -> present
-        mock.add_response(MockResponse::Ok("gh".into()));
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_TRUE.into()));
         // 4. rustup check -> present
-        mock.add_response(MockResponse::Ok("rustup".into()));
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_TRUE.into()));
         // 5. claude check -> present
-        mock.add_response(MockResponse::Ok("claude".into()));
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_TRUE.into()));
         // 6. codex check -> present
-        mock.add_response(MockResponse::Ok("codex".into()));
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_TRUE.into()));
         // 7. auth check -> authenticated
-        mock.add_response(MockResponse::Ok("ok".into()));
+        mock.add_response(MockResponse::Ok(STATUS_CHECK_TRUE.into()));
 
         run(&mock, &test_config()).unwrap();
 
