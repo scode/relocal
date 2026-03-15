@@ -16,6 +16,15 @@ Add `///` docstrings to modules (via `//!` at the top of the file) and major pub
 
 When modifying code, check that existing comments and docstrings in the affected area are still accurate. Update or remove any that have become stale or misleading due to your changes.
 
+## Error Handling for Shell and Remote Commands
+
+Every call site that runs a shell command (local or remote) must handle failure. Do not rely on `?` alone — `run_ssh` returns `Ok(CommandOutput)` even when the remote command exits non-zero. The `?` only catches transport-level errors (e.g., SSH binary not found).
+
+- **Always check exit status** after `run_ssh` / `run_rsync` unless the call site intentionally treats all outcomes as non-fatal. Use `CommandOutput::check("description")?` for concise checking.
+- **Distinguish SSH transport errors from remote command errors** when the distinction affects correctness. For boolean probes (`test -e`, `command -v`), use `ssh::run_status_check` — it wraps the command so that SSH failures propagate as errors rather than being misinterpreted as "not found". A raw `status.success()` check on `run_ssh` output conflates "SSH couldn't connect" with "remote command returned false".
+- **When the distinction doesn't matter** (e.g., both SSH failure and command failure should abort with an error), `.check()` is sufficient.
+- **Test both paths**: include tests for the failure case of new commands, not just the success path.
+
 ## Testing
 
 Always include unit tests alongside new code. Every new function, method, or non-trivial behavior should have test coverage in a `#[cfg(test)]` module in the same file. Don't defer tests to a later step — write them as part of the implementation.
