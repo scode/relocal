@@ -162,6 +162,16 @@ If the SSH session drops unexpectedly (network failure, laptop sleep):
   avoid data loss. The user must decide the correct action since the tool cannot
   know the state.
 
+### `relocal ssh [session-name]`
+
+Opens an interactive SSH shell in the remote session directory
+(`~/relocal/<session-name>/`). No sync, lock, or background loop — just a
+direct `ssh -t` that `cd`s into the directory and execs a login shell.
+
+Can be used alongside a running `relocal claude` session to inspect what the
+agent is doing, make quick manual edits, or run commands in the same working
+directory. Also useful between sessions for debugging or general remote work.
+
 ### `relocal sync push [session-name]`
 
 Manual sync: local → remote. Uses the same rsync invocation as the background
@@ -371,7 +381,8 @@ even when nothing has changed. However:
   on push is the remote, not local).
 - **Missing `relocal.toml`**: All commands except `init` fail with a clear error
   message. Only the current working directory is checked (no upward walk).
-- **Remote directory does not exist**: `claude` creates it. `sync` fails (rsync
+- **Remote directory does not exist**: `claude` creates it. `ssh` fails (the
+  remote `cd` fails and the user sees the shell error). `sync` fails (rsync
   reports the error). `status` reports that the directory does not exist (does
   not fail). `destroy` fails with a message that the session was not found.
 - **Claude not installed on remote**: `claude` fails with a message suggesting

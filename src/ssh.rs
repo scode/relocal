@@ -145,6 +145,16 @@ pub fn check_claude_installed() -> String {
     "command -v claude".to_string()
 }
 
+/// Command to launch an interactive login shell in the working directory.
+///
+/// The `exec $SHELL -l` looks redundant with `run_ssh_interactive`'s
+/// `login_shell_wrap`, but is intentional: the outer `bash -lc` is transport
+/// (ensures PATH is set up so `cd` resolves `~`), while `exec $SHELL -l`
+/// replaces it with the user's preferred shell.
+pub fn start_ssh_session(session: &str) -> String {
+    format!("cd {} && exec $SHELL -l", remote_work_dir(session))
+}
+
 /// Command to launch an interactive Claude session in the working directory.
 ///
 /// Any extra arguments are appended after `--dangerously-skip-permissions`,
@@ -342,6 +352,12 @@ mod tests {
         assert!(cmd.contains("du -sh"));
         // No longer filters dot-dirs
         assert!(!cmd.contains("grep -v"));
+    }
+
+    #[test]
+    fn start_ssh_session_format() {
+        let cmd = start_ssh_session("s1");
+        assert_eq!(cmd, "cd ~/relocal/s1 && exec $SHELL -l");
     }
 
     #[test]

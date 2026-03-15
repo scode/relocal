@@ -124,6 +124,7 @@ Once the session is running, a background loop keeps local in sync with remote c
 ### Common Commands
 
 ```sh
+relocal ssh [session-name]        # open a shell in the remote session directory
 relocal sync pull [session-name]  # fetch remote changes to local
 relocal sync push [session-name]  # push local changes to remote
 relocal status [session-name]     # show session info
