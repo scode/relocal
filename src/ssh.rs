@@ -191,6 +191,76 @@ pub fn start_codex_session(session: &str, extra_args: &[String]) -> String {
     cmd
 }
 
+/// Deterministic ControlMaster socket path for daemon-managed sessions.
+///
+/// Hashes session name + remote (no PID), so all clients and the daemon
+/// for a given (session, remote) pair resolve to the same path. The remote
+/// is included because two repos can have the same session name (derived
+/// from directory name) but point at different remotes — without it, a
+/// daemon for one remote would be reused by a client targeting another.
+pub fn shared_control_socket_path(session: &str, remote: &str) -> PathBuf {
+    let prefix: String = session.chars().take(20).collect();
+    let mut hasher = std::hash::DefaultHasher::new();
+    session.hash(&mut hasher);
+    remote.hash(&mut hasher);
+    let hash = hasher.finish() as u32;
+    std::env::temp_dir().join(format!("rlc-{prefix}-{hash:08x}"))
+}
+
+/// Unix domain socket path where the session daemon listens for clients.
+///
+/// Keyed on (session, remote) — not session alone — so that two repos
+/// with the same session name but different remotes get independent daemons.
+/// Uses the same prefix+hash scheme as [`shared_control_socket_path`] to
+/// keep the path under the 104-byte Unix socket limit on macOS.
+pub fn daemon_socket_path(session: &str, remote: &str) -> PathBuf {
+    let prefix: String = session.chars().take(20).collect();
+    let mut hasher = std::hash::DefaultHasher::new();
+    // Domain tag prevents hash collision with ControlMaster/flock paths.
+    "daemon-sock".hash(&mut hasher);
+    session.hash(&mut hasher);
+    remote.hash(&mut hasher);
+    let hash = hasher.finish() as u32;
+    std::env::temp_dir().join(format!("rlc-{prefix}-{hash:08x}.sock"))
+}
+
+/// Flock path used to serialize daemon startup across concurrent invocations.
+///
+/// Keyed on (session, remote) like the other daemon paths.
+pub fn daemon_flock_path(session: &str, remote: &str) -> PathBuf {
+    let prefix: String = session.chars().take(20).collect();
+    let mut hasher = std::hash::DefaultHasher::new();
+    "daemon-flock".hash(&mut hasher);
+    session.hash(&mut hasher);
+    remote.hash(&mut hasher);
+    let hash = hasher.finish() as u32;
+    std::env::temp_dir().join(format!("rlc-{prefix}-{hash:08x}.flock"))
+}
+
+/// Acquires an exclusive advisory lock on the given file, blocking until available.
+///
+/// Used by both the daemon client (to serialize daemon startup) and the daemon
+/// itself (to hold the lock through shutdown, preventing new daemons from
+/// starting before the old one finishes cleaning up the remote lock file).
+///
+/// The daemon acquires this at shutdown, not startup. Acquiring at startup
+/// would deadlock — see the comments in `daemon::run_daemon` for why.
+pub fn acquire_flock(file: &std::fs::File) -> Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: file is a valid open File; as_raw_fd returns a valid fd that
+    // outlives this call. flock is safe to call on any valid fd.
+    let ret = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+    if ret != 0 {
+        return Err(Error::DaemonSpawnFailed {
+            message: format!(
+                "failed to acquire flock: {}",
+                std::io::Error::last_os_error()
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// Manages a persistent SSH ControlMaster connection.
 ///
 /// All SSH and rsync commands during a session can share this connection,
@@ -201,6 +271,16 @@ pub struct SshControlMaster {
 }
 
 impl SshControlMaster {
+    /// Establishes a ControlMaster with a deterministic socket path (no PID).
+    ///
+    /// Used by the session daemon so that all clients resolve to the same
+    /// ControlMaster. Standalone commands should use [`start`] instead to
+    /// avoid colliding with a running daemon.
+    pub fn start_shared(remote: &str, session: &str) -> Result<Self> {
+        let socket_path = shared_control_socket_path(session, remote);
+        Self::start_with_path(remote, socket_path)
+    }
+
     /// Establishes a ControlMaster connection to the remote.
     ///
     /// Creates a background SSH process (`-N -f`) that holds the connection
@@ -209,7 +289,10 @@ impl SshControlMaster {
     /// chars of the session name and hash encodes session+PID.
     pub fn start(remote: &str, session: &str) -> Result<Self> {
         let socket_path = Self::socket_path_for(session);
+        Self::start_with_path(remote, socket_path)
+    }
 
+    fn start_with_path(remote: &str, socket_path: PathBuf) -> Result<Self> {
         let status = Command::new("ssh")
             .args([
                 "-o",
@@ -492,5 +575,105 @@ mod tests {
         assert!(message.contains("remote error"));
         assert!(message.contains("status probe failed"));
         assert!(message.contains("ssh helper test"));
+    }
+
+    #[test]
+    fn shared_control_socket_path_is_deterministic() {
+        let a = shared_control_socket_path("my-session", "user@host");
+        let b = shared_control_socket_path("my-session", "user@host");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn shared_control_socket_path_differs_by_session() {
+        let a = shared_control_socket_path("session-a", "user@host");
+        let b = shared_control_socket_path("session-b", "user@host");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn shared_control_socket_path_differs_by_remote() {
+        let a = shared_control_socket_path("my-session", "user@host-a");
+        let b = shared_control_socket_path("my-session", "user@host-b");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn shared_control_socket_path_fits_unix_limit() {
+        let long_session = "a".repeat(100);
+        let path = shared_control_socket_path(&long_session, "user@very-long-hostname.example.com");
+        let path_str = path.to_str().unwrap();
+        assert!(
+            path_str.len() <= 104,
+            "socket path too long ({} bytes): {path_str}",
+            path_str.len()
+        );
+    }
+
+    #[test]
+    fn shared_control_socket_path_includes_prefix() {
+        let path = shared_control_socket_path("my-cool-project", "user@host");
+        let filename = path.file_name().unwrap().to_str().unwrap();
+        assert!(filename.starts_with("rlc-my-cool-project-"));
+    }
+
+    #[test]
+    fn daemon_socket_path_format() {
+        let path = daemon_socket_path("my-session", "user@host");
+        let filename = path.file_name().unwrap().to_str().unwrap();
+        assert!(filename.starts_with("rlc-my-session-"));
+        assert!(filename.ends_with(".sock"));
+    }
+
+    #[test]
+    fn daemon_socket_path_is_deterministic() {
+        assert_eq!(
+            daemon_socket_path("my-session", "user@host"),
+            daemon_socket_path("my-session", "user@host"),
+        );
+    }
+
+    #[test]
+    fn daemon_socket_path_differs_by_session() {
+        assert_ne!(
+            daemon_socket_path("a", "user@host"),
+            daemon_socket_path("b", "user@host"),
+        );
+    }
+
+    #[test]
+    fn daemon_socket_path_differs_by_remote() {
+        assert_ne!(
+            daemon_socket_path("my-session", "user@host-a"),
+            daemon_socket_path("my-session", "user@host-b"),
+        );
+    }
+
+    #[test]
+    fn daemon_socket_path_fits_unix_limit() {
+        let long_session = "a".repeat(100);
+        let path = daemon_socket_path(&long_session, "user@very-long-hostname.example.com");
+        let path_str = path.to_str().unwrap();
+        assert!(
+            path_str.len() <= 104,
+            "socket path too long ({} bytes): {path_str}",
+            path_str.len()
+        );
+    }
+
+    #[test]
+    fn daemon_socket_path_does_not_collide_with_control_path() {
+        assert_ne!(
+            daemon_socket_path("my-session", "user@host"),
+            shared_control_socket_path("my-session", "user@host"),
+        );
+    }
+
+    #[test]
+    fn daemon_flock_path_format() {
+        let path = daemon_flock_path("my-session", "user@host");
+        let filename = path.file_name().unwrap().to_str().unwrap();
+        assert!(filename.starts_with("rlc-my-session-"));
+        assert!(filename.ends_with(".flock"));
     }
 }

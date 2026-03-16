@@ -57,7 +57,12 @@ Session names must contain only alphanumeric characters, hyphens, and underscore
 ## Concurrent Sessions
 
 Multiple sessions can run simultaneously — different repos to the same remote, or the same repo with different session
-names. Each session has its own remote directory and independent background sync loop.
+names. Each session has its own remote directory and independent sync infrastructure.
+
+Within a single session, multiple tool invocations from the same machine can run concurrently — for example,
+`relocal claude` and `relocal codex` against the same session name. They share a single SSH ControlMaster, background
+sync loop, and remote lock file via a local session daemon (see [Session Daemon](#session-daemon)). Cross-machine
+concurrency against the same session is prevented by the remote lock file.
 
 ## CLI Commands
 
@@ -122,45 +127,42 @@ All steps are idempotent — re-running `relocal remote install` is safe.
 
 ### `relocal claude [session-name]`
 
-Main command. Syncs the repo to the remote and launches an interactive Claude session with continuous background
-synchronization.
+Main command. Connects to (or spawns) a session daemon, then launches an interactive Claude session on the remote.
 
 Steps:
 
 1. Read `relocal.toml` from the repo root. Fail if not found.
 2. Validate the session name (see [Session Naming](#session-naming)).
-3. Establish an SSH ControlMaster connection (see [SSH Connection Sharing](#ssh-connection-sharing)). All subsequent SSH
-   and rsync commands in this session reuse this connection.
-4. Check that Claude Code is installed on the remote. Fail with a message suggesting `relocal remote install` if not
-   found.
-5. Create the remote working directory `~/relocal/<session-name>/` if it does not exist.
-6. Perform an initial sync: local → remote (push).
-7. Start the background sync loop (see [Background Sync Loop](#background-sync-loop)).
-8. Open an interactive SSH session (`ssh -t`) to the remote host, `cd` into the working directory, and exec
+3. Connect to the session daemon for this session name, or spawn one if none is running (see
+   [Session Daemon](#session-daemon)). The daemon owns the SSH ControlMaster, background sync loop, and remote lock
+   file.
+4. Check that Claude Code is installed on the remote (using the daemon's shared ControlMaster). Fail with a message
+   suggesting `relocal remote install` if not found.
+5. Open an interactive SSH session (`ssh -t`) to the remote host, `cd` into the working directory, and exec
    `claude --dangerously-skip-permissions`.
-9. When the SSH session ends (Claude exits or user quits):
-   - Shut down the background sync loop.
-   - If Claude exited cleanly (exit code 0), perform a final sync: remote → local (pull).
-   - Tear down the ControlMaster connection.
+6. When the SSH session ends (Claude exits or user quits):
+   - Disconnect from the session daemon. If this was the last connected client, the daemon performs a final sync pull
+     and tears down (see [Session Daemon — Shutdown](#daemon-shutdown)).
    - Print a summary (session name, remote path, reminder about `sync pull`).
 
 **Signal handling**: `SIGINT` (Ctrl+C) is naturally forwarded to the remote Claude process by the SSH terminal session.
-When the SSH session exits (whether from Claude exiting, user quitting, or signal), `relocal` proceeds with cleanup: the
-background sync is shut down and the ControlMaster is torn down.
+When the SSH session exits (whether from Claude exiting, user quitting, or signal), the client disconnects from the
+daemon.
 
 If the SSH session drops unexpectedly (network failure, laptop sleep):
 
 - The main process detects the SSH child process exiting with an error.
-- The background sync loop is shut down.
 - `relocal` prints a message informing the user that the session was interrupted, that there may be unsynchronized work
   on the remote, and that they should use `relocal sync pull` or `relocal sync push` as appropriate to avoid data loss.
   The user must decide the correct action since the tool cannot know the state.
+- The daemon connection is closed. If other clients are still connected, the daemon continues running.
 
 ### `relocal codex [session-name]`
 
 Identical to `relocal claude` except it launches Codex instead of Claude Code. The remote command is `codex --yolo`
-(instead of `claude --dangerously-skip-permissions`). All other behavior — session management, sync, lock files,
-ControlMaster, background loop, dirty shutdown handling — is the same.
+(instead of `claude --dangerously-skip-permissions`). All other behavior — daemon connection, sync, dirty shutdown
+handling — is the same. Multiple `relocal claude` and `relocal codex` invocations can run concurrently against the same
+session, sharing the daemon's infrastructure.
 
 ### `relocal ssh [session-name]`
 
@@ -266,13 +268,13 @@ See [Future Improvements](#future-improvements) for plans to support bidirection
 
 ## SSH Connection Sharing
 
-All SSH and rsync commands during a session (`relocal claude` or `relocal codex`) share a single persistent SSH
-connection via OpenSSH's ControlMaster feature. This avoids the overhead of establishing a new TCP+SSH handshake for
-every command.
+All SSH and rsync commands during a session share a single persistent SSH connection via OpenSSH's ControlMaster
+feature. This avoids the overhead of establishing a new TCP+SSH handshake for every command. The ControlMaster is owned
+by the session daemon and shared across all connected clients.
 
 ### ControlMaster Setup
 
-At the start of a session, a ControlMaster is established:
+The session daemon establishes a ControlMaster at startup:
 
 ```
 ssh -o ControlMaster=yes -o ControlPath=<socket> -o ControlPersist=300 -N -f <remote>
@@ -281,12 +283,16 @@ ssh -o ControlMaster=yes -o ControlPath=<socket> -o ControlPersist=300 -N -f <re
 - `-N`: no remote command (just holds the connection open)
 - `-f`: backgrounds after connecting
 - The socket path is `$TMPDIR/rlc-<prefix>-<hash>` where prefix is up to 20 characters of the session name and hash is
-  an 8-hex-digit digest of session+PID. The fixed-length filename avoids exceeding the 104-byte Unix socket path limit
-  on macOS.
+  an 8-hex-digit digest of session name + remote. The fixed-length filename avoids exceeding the 104-byte Unix socket
+  path limit on macOS. The path is deterministic per (session, remote) pair (no PID component) so that all clients and
+  the daemon for a given session on a given remote use the same socket.
+
+Standalone commands (`relocal sync push/pull`) do not establish a persistent ControlMaster — SSH opens ad-hoc
+connections for each rsync/ssh invocation.
 
 ### ControlMaster Teardown
 
-On session end (clean or dirty), the ControlMaster is torn down:
+When the session daemon shuts down (last client disconnected), the ControlMaster is torn down:
 
 ```
 ssh -O exit -o ControlPath=<socket> <remote>
@@ -303,39 +309,145 @@ All `ProcessRunner` commands inject `-o ControlPath=<socket>
 - `run_ssh_interactive`: extra args before `-t`
 - `run_rsync`: via `-e "ssh -o ControlPath=<socket> -o ControlMaster=auto"` added to the rsync argument list
 
-This is transparent to higher-level code — the `CommandRunner` trait interface is unchanged.
+This is transparent to higher-level code — the `CommandRunner` trait interface is unchanged. Clients receive the
+ControlMaster socket path from the daemon during connection handshake and create their own `ProcessRunner` configured
+with that path.
+
+## Session Daemon
+
+The session daemon is a local process that owns the shared infrastructure for a session: the SSH ControlMaster,
+background sync loop, and remote lock file. It is spawned automatically by the first `relocal claude` or `relocal codex`
+invocation for a given session and exits when the last client disconnects.
+
+Daemon identity is keyed on `(session_name, remote)` — not session name alone. Two repos that happen to have the same
+session name (e.g., both named `my-project`) but different `remote` values in their `relocal.toml` get independent
+daemons with separate ControlMasters, sync loops, and lock files. Without the remote in the key, a client targeting one
+remote could attach to a daemon managing a different remote's working tree.
+
+The local `repo_root` is intentionally _not_ part of the daemon identity. Two local checkouts of the same repo with the
+same session name and remote share the same remote working directory (`~/relocal/<session>/`), so they should share the
+same daemon. The initial push comes from whichever checkout spawned the daemon. Users who need independent remote
+directories for different local checkouts should use different session names.
+
+The daemon is tool-agnostic — it does not know whether clients are running Claude, Codex, or any future tool. Tool
+installation checks are the client's responsibility.
+
+### Daemon Socket
+
+The daemon listens on a Unix domain socket at `$TMPDIR/rlc-<prefix>-<hash>.sock`, where prefix and hash follow the same
+scheme as the ControlMaster socket path — hashing `(session_name, remote)` to keep the total under 104 bytes. The socket
+is created with mode 0600 (owner-only). The flock file (`$TMPDIR/rlc-<prefix>-<hash>.flock`) is also set to 0600.
+
+Clients connect to this socket to register their presence. The protocol is minimal:
+
+1. Client connects to the daemon socket.
+2. Daemon sends the ControlMaster socket path as a newline-terminated UTF-8 string.
+3. The connection stays open for the duration of the client's session. When the client exits (or crashes), the kernel
+   closes the fd and the daemon detects the disconnect.
+
+There are no other messages. Client tracking is entirely connection-lifecycle-based.
+
+### Daemon Startup
+
+When `relocal claude` or `relocal codex` starts:
+
+1. Try to connect to the daemon socket. If successful, read the ControlMaster path (with a 30-second read timeout) and
+   proceed.
+2. If the connection fails (socket does not exist or connection refused): acquire an exclusive `flock(2)` on
+   `$TMPDIR/rlc-<prefix>-<hash>.flock` to serialize daemon startup across concurrent invocations.
+3. Under the flock, try connecting again — another process may have started the daemon while we waited.
+4. If still no daemon: remove any stale socket file at `$TMPDIR/rlc-<prefix>-<hash>.sock`, then spawn
+   `relocal _daemon <session-name> <repo-root>` as a subprocess with piped stdout.
+5. Wait for the daemon to write `READY\n` to stdout, indicating setup is complete and the socket is accepting
+   connections. If the daemon exits before writing READY, report the setup error.
+6. Connect to the daemon socket, release the flock.
+
+### Daemon Setup
+
+The daemon performs these steps before accepting clients:
+
+1. Start the SSH ControlMaster (deterministic socket path, no PID).
+2. Create the remote working directory.
+3. Acquire the remote lock file (atomic via `set -o noclobber`). The remote lock prevents a second machine from starting
+   a daemon against the same session — local concurrency is handled by the Unix socket and flock.
+4. Perform the initial sync push (local → remote).
+5. Bind the Unix domain socket and begin accepting connections.
+6. Write `READY\n` to stdout and close it.
+
+### Daemon Main Loop
+
+The daemon runs a single-threaded event loop using `poll(2)`:
+
+- The poll set contains the listener socket fd and all connected client socket fds.
+- Poll timeout is 3 seconds (the sync interval).
+- On listener activity: accept the new connection, send the ControlMaster path, add the client fd to the poll set. If
+  `set_nonblocking` fails on the accepted stream, the stream is rejected (a blocking fd in the poll set would freeze the
+  event loop). If `write_all` of the control path fails, the stream is still added — the disconnect will be detected on
+  the next poll iteration, which is necessary to keep the "last client left" exit condition correct.
+- On client activity (EOF or error): remove the client fd from the poll set. If no clients remain, begin shutdown.
+- On timeout: run `sync_pull` (remote → local) if at least one client is connected. Transient failures are logged as
+  warnings; the loop continues.
+
+If no client has ever connected within 30 seconds of startup, the daemon shuts down. This prevents the daemon from
+running indefinitely if the spawning process dies between writing READY and connecting to the socket.
+
+### Daemon Shutdown
+
+<a id="daemon-shutdown"></a>
+
+When the last client disconnects:
+
+1. Close the listener (stop accepting new connections). New `connect()` calls will get ECONNREFUSED.
+2. Acquire the startup flock (`$TMPDIR/rlc-<prefix>-<hash>.flock`). This prevents a race where a new client sees
+   ECONNREFUSED, spawns a fresh daemon, and hits the still-present remote lock (StaleSession). The flock cannot be
+   acquired at daemon startup because of a deadlock: the spawning client holds the flock while waiting for READY, and
+   the daemon can't send the control path (which unblocks the client) until it enters the poll loop, which it can't do
+   while blocked on the flock.
+3. Perform a final `sync_pull`.
+4. Remove the remote lock file.
+5. Drop the ControlMaster (tears down the SSH connection).
+6. Remove the Unix domain socket file.
+7. Exit (releases the flock).
+
+The spawning client starts a background thread to reap the daemon child process, preventing zombie accumulation. The
+daemon outlives the spawning client, so synchronous `wait()` is not possible.
+
+If the daemon crashes, the Unix socket file and remote lock file may be left behind. Clients detect a stale socket
+(connection refused on an existing file) and clean it up during the startup sequence. The remote lock file requires
+manual cleanup via `relocal destroy`.
+
+### `relocal _daemon`
+
+Hidden internal subcommand. Not intended for direct use. Accepts the session name and repo root path as arguments. Reads
+`relocal.toml` from the repo root for the remote host and exclusion patterns.
 
 ## Background Sync Loop
 
-The background sync loop replaces the previous hook-triggered sidecar. It runs as a local background thread managed by
-the session command (`relocal claude` or `relocal codex`).
+The background sync loop runs inside the session daemon, pulling remote changes to local on a fixed interval. It is part
+of the daemon's poll-based event loop rather than a separate thread.
 
 ### Architecture
 
 ```
- LOCAL                          REMOTE
-┌─────────────┐    SSH #1     ┌──────────────────────┐
-│ relocal     │───(ssh -t)───→│ agent session        │
-│             │               │                      │
-│ sync loop   │    rsync      │                      │
-│  └─ pull ───│──────────────→│  (every ~3 seconds)  │
-│             │               │                      │
-└─────────────┘               └──────────────────────┘
-         (all via ControlMaster)
+ LOCAL                                    REMOTE
+┌──────────────────────────────┐        ┌──────────────────────┐
+│ session daemon               │        │                      │
+│  ├─ ControlMaster ──────────────(SSH)─│                      │
+│  ├─ sync loop (pull) ──────────(rsync)│  ~/relocal/<session> │
+│  └─ client tracking          │        │                      │
+│       ├─ client 1 (claude)   │        │                      │
+│       └─ client 2 (codex)    │        │                      │
+│                              │        │                      │
+│ relocal claude ──(unix sock)─┤  SSH   │                      │
+│   └─ ssh -t ────────────────────────→ │  claude session      │
+│                              │        │                      │
+│ relocal codex ──(unix sock)──┤  SSH   │                      │
+│   └─ ssh -t ────────────────────────→ │  codex session       │
+└──────────────────────────────┘        └──────────────────────┘
 ```
 
-The loop thread uses `mpsc::recv_timeout` on a shutdown channel. Each iteration:
-
-1. Wait up to N seconds (currently 3) for a shutdown signal.
-2. If shutdown received (or sender dropped): exit the loop.
-3. Otherwise (timeout): run `sync_pull` (remote → local).
-4. If the pull fails, log a warning and continue — transient rsync failures should not kill the session.
-
-### Shutdown
-
-The main thread shuts down the sync loop by dropping the channel sender, which causes `recv_timeout` to return
-immediately. The main thread then joins the background thread. This gives sub-millisecond shutdown latency (no need to
-wait for a sleep cycle).
+Each poll timeout (3 seconds), the daemon runs `sync_pull` (remote → local) if at least one client is connected. If the
+pull fails, it logs a warning and continues — transient rsync failures do not kill the session.
 
 ### Trade-offs
 
@@ -347,12 +459,17 @@ The polling approach is less efficient than hook-triggered syncs — it runs rsy
 
 ## Error Handling
 
-- **Background sync failure**: If a pull fails during the background loop (e.g., transient network issue), the error is
-  logged as a warning and the loop continues. The session is not interrupted.
-- **SSH connection drop**: The main process detects the SSH child process exit, shuts down the background sync, tears
-  down the ControlMaster (best-effort), and prints a warning with recovery instructions (use
-  `relocal sync
-  push`/`pull`).
+- **Background sync failure**: If a pull fails during the daemon's sync loop (e.g., transient network issue), the error
+  is logged as a warning and the loop continues. Connected sessions are not interrupted.
+- **SSH connection drop**: The client process detects the SSH child process exit and prints a warning with recovery
+  instructions (use `relocal sync push`/`pull`). The daemon continues running if other clients are still connected.
+- **Daemon crash**: If the daemon crashes while clients are running, they lose the shared ControlMaster. Their SSH
+  sessions may break — this is the same failure mode as a network drop. The next invocation detects the stale daemon
+  socket (connection refused) and starts a fresh daemon.
+- **Daemon spawn failure**: If the daemon fails during setup (ControlMaster, lock, push), it exits without writing the
+  readiness signal. The spawning client reports the error.
+- **Spawner dies before connecting**: If the process that spawned the daemon dies between READY and socket connect, the
+  daemon exits after 30 seconds with no clients (see [Daemon Main Loop](#daemon-main-loop)).
 - **Pull safety — remote validation**: Before any remote→local sync (manual or background-loop-triggered),
   `git fsck --strict --full --no-dangling` is run on the remote session directory. If it fails, the pull is refused to
   prevent `rsync --delete` from wiping the local tree.
@@ -374,7 +491,9 @@ The polling approach is less efficient than hook-triggered syncs — it runs rsy
 - SSH/rsync: shell out to `ssh` and `rsync` commands via `std::process::Command` (no SSH library needed)
 - Configuration: `toml` crate for parsing `relocal.toml`
 - Logging: `tracing` crate. Default level WARN. `-v` gives INFO, `-vv` gives DEBUG, `-vvv` gives TRACE.
-- No async runtime needed — the background sync loop uses a single thread with `mpsc::recv_timeout` for clean shutdown.
+- Session daemon event loop: `nix` crate for `poll(2)`. Unix domain sockets via `std::os::unix::net`. File locking via
+  `libc::flock`.
+- No async runtime needed — the daemon uses a single-threaded poll loop.
 
 ## Output and UX
 
@@ -480,14 +599,16 @@ completion (including on panic, via `Drop` guard).
 
 #### Background Sync Loop
 
-- Start background loop, create file on remote, wait for one poll cycle, verify file appears locally.
-- Background loop continues after a transient sync failure.
-- Shutdown signal stops the loop promptly (within one poll cycle).
+- Start daemon, create file on remote, wait for one poll cycle, verify file appears locally.
+- Sync loop continues after a transient sync failure.
+- When the last client disconnects, the daemon shuts down promptly (within one poll cycle).
 
 #### Session Lifecycle
 
-- `claude`/`codex` creates remote directory, performs initial push.
-- On clean exit: final pull is performed, summary is printed.
+- First `claude`/`codex` invocation spawns daemon, creates remote directory, performs initial push.
+- Second concurrent invocation connects to existing daemon, shares the same ControlMaster.
+- Disconnecting one client while another is connected does not shut down the daemon.
+- On clean exit of last client: final pull is performed, daemon socket is removed.
 - `destroy` removes working directory.
 - `destroy` on non-existent session → error.
 

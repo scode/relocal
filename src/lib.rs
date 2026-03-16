@@ -2,6 +2,8 @@
 
 pub mod commands;
 pub mod config;
+pub mod daemon;
+pub mod daemon_client;
 pub mod discovery;
 pub mod error;
 pub mod rsync;

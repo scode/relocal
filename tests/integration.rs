@@ -13,9 +13,10 @@
 
 use std::sync::Arc;
 
-use relocal::commands::session::ToolConfig;
-use relocal::commands::{destroy, nuke, session, sync};
+use relocal::commands::{destroy, nuke, sync};
 use relocal::config::Config;
+use relocal::daemon;
+use relocal::daemon_client;
 use relocal::runner::{CommandRunner, ProcessRunner};
 use relocal::sidecar::Sidecar;
 use relocal::ssh;
@@ -27,14 +28,6 @@ use relocal::ssh;
 /// Returns the test remote from the environment, or None if not set.
 fn test_remote() -> Option<String> {
     std::env::var("RELOCAL_TEST_REMOTE").ok()
-}
-
-fn claude_tool() -> ToolConfig {
-    ToolConfig {
-        display_name: "Claude Code",
-        check_installed: ssh::check_claude_installed,
-        start_session: ssh::start_claude_session,
-    }
 }
 
 /// Generates a unique session name for a test to avoid collisions.
@@ -127,7 +120,7 @@ fn remote_dir(session: &str) -> String {
 }
 
 /// Ensures the remote session directory exists (for tests that call sync directly
-/// without going through `session::setup`).
+/// without going through `daemon::daemon_setup`).
 fn ensure_remote_session_dir(remote: &str, session: &str) {
     let runner = ProcessRunner::default();
     runner
@@ -430,15 +423,7 @@ fn setup_creates_dir_and_pushes() {
 
     std::fs::write(dir.path().join("data.txt"), "hello").unwrap();
 
-    session::setup(
-        &claude_tool(),
-        &runner,
-        &config,
-        &session,
-        dir.path(),
-        false,
-    )
-    .unwrap();
+    daemon::daemon_setup(&runner, &config, &session, dir.path(), false).unwrap();
 
     // Remote dir exists with pushed data
     assert!(remote_file_exists(
@@ -457,15 +442,7 @@ fn destroy_removes_dir() {
     let runner = ProcessRunner::default();
 
     // Setup first
-    session::setup(
-        &claude_tool(),
-        &runner,
-        &config,
-        &session,
-        dir.path(),
-        false,
-    )
-    .unwrap();
+    daemon::daemon_setup(&runner, &config, &session, dir.path(), false).unwrap();
 
     // Destroy (no confirm in test)
     destroy::run(&runner, &config, &session, false).unwrap();
@@ -490,15 +467,7 @@ fn background_sync_pulls_remote_changes() {
     let runner = ProcessRunner::default();
 
     // Setup: push initial state
-    session::setup(
-        &claude_tool(),
-        &runner,
-        &config,
-        &session,
-        dir.path(),
-        false,
-    )
-    .unwrap();
+    daemon::daemon_setup(&runner, &config, &session, dir.path(), false).unwrap();
 
     // Start background sync loop
     let sidecar_runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(ProcessRunner::default());
@@ -544,15 +513,7 @@ fn background_sync_shutdown_is_prompt() {
     };
     let runner = ProcessRunner::default();
 
-    session::setup(
-        &claude_tool(),
-        &runner,
-        &config,
-        &session,
-        dir.path(),
-        false,
-    )
-    .unwrap();
+    daemon::daemon_setup(&runner, &config, &session, dir.path(), false).unwrap();
 
     let sidecar_runner: Arc<dyn CommandRunner + Send + Sync> = Arc::new(ProcessRunner::default());
     let mut sidecar = Sidecar::start(
@@ -571,6 +532,141 @@ fn background_sync_shutdown_is_prompt() {
         start.elapsed() < std::time::Duration::from_secs(2),
         "shutdown took {:?}, expected < 2s",
         start.elapsed()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Daemon lifecycle tests
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore = "requires RELOCAL_TEST_REMOTE"]
+fn daemon_spawns_and_client_connects() {
+    let remote = test_remote().unwrap();
+    let session = unique_session("daemon-spawn");
+    let (dir, _config) = make_local_repo(&remote);
+    let _cleanup = RemoteCleanup {
+        remote: remote.clone(),
+        session: session.clone(),
+    };
+
+    std::fs::write(dir.path().join("data.txt"), "hello").unwrap();
+
+    // connect_or_spawn should start a daemon and return a connection.
+    let conn = daemon_client::connect_or_spawn(&session, &remote, dir.path(), 0).unwrap();
+
+    // The connection should provide a valid ControlMaster path.
+    assert!(
+        conn.control_master_path()
+            .to_str()
+            .unwrap()
+            .contains("rlc-"),
+        "control master path should contain rlc- prefix"
+    );
+
+    // The daemon should have pushed our file to the remote.
+    assert!(
+        remote_file_exists(&remote, &format!("{}/data.txt", remote_dir(&session))),
+        "daemon should have pushed initial state"
+    );
+
+    drop(conn);
+
+    // Give daemon time to shut down and clean up.
+    std::thread::sleep(std::time::Duration::from_secs(1));
+
+    // Daemon socket should be gone.
+    assert!(
+        !ssh::daemon_socket_path(&session, &remote).exists(),
+        "daemon socket should be removed after last client disconnects"
+    );
+}
+
+#[test]
+#[ignore = "requires RELOCAL_TEST_REMOTE"]
+fn daemon_second_client_reuses_existing() {
+    let remote = test_remote().unwrap();
+    let session = unique_session("daemon-reuse");
+    let (dir, _config) = make_local_repo(&remote);
+    let _cleanup = RemoteCleanup {
+        remote: remote.clone(),
+        session: session.clone(),
+    };
+
+    std::fs::write(dir.path().join("data.txt"), "hello").unwrap();
+
+    let conn1 = daemon_client::connect_or_spawn(&session, &remote, dir.path(), 0).unwrap();
+    let control_path_1 = conn1.control_master_path().to_path_buf();
+
+    // Second client should connect to the same daemon.
+    let conn2 = daemon_client::connect_or_spawn(&session, &remote, dir.path(), 0).unwrap();
+    let control_path_2 = conn2.control_master_path().to_path_buf();
+
+    assert_eq!(
+        control_path_1, control_path_2,
+        "both clients should share the same ControlMaster"
+    );
+
+    // Drop first client — daemon should stay alive.
+    drop(conn1);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(
+        ssh::daemon_socket_path(&session, &remote).exists(),
+        "daemon should stay alive while second client is connected"
+    );
+
+    // Drop second client — daemon should shut down.
+    drop(conn2);
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    assert!(
+        !ssh::daemon_socket_path(&session, &remote).exists(),
+        "daemon should shut down after last client disconnects"
+    );
+}
+
+#[test]
+#[ignore = "requires RELOCAL_TEST_REMOTE"]
+fn daemon_does_final_pull_on_last_disconnect() {
+    let remote = test_remote().unwrap();
+    let session = unique_session("daemon-finalpull");
+    let (dir, _config) = make_local_repo(&remote);
+    let _cleanup = RemoteCleanup {
+        remote: remote.clone(),
+        session: session.clone(),
+    };
+
+    let conn = daemon_client::connect_or_spawn(&session, &remote, dir.path(), 0).unwrap();
+
+    // Create a file on the remote while the daemon is running.
+    write_remote_file(
+        &remote,
+        &format!("{}/remote-created.txt", remote_dir(&session)),
+        "from remote",
+    );
+
+    // Wait for at least one background sync cycle.
+    std::thread::sleep(std::time::Duration::from_secs(5));
+
+    // The background sync should have pulled it.
+    assert!(
+        dir.path().join("remote-created.txt").exists(),
+        "daemon background sync should have pulled remote file"
+    );
+
+    // Now create another file just before disconnecting.
+    write_remote_file(
+        &remote,
+        &format!("{}/final-file.txt", remote_dir(&session)),
+        "final",
+    );
+
+    // Disconnect — daemon should do a final pull before exiting.
+    drop(conn);
+    std::thread::sleep(std::time::Duration::from_secs(2));
+
+    assert!(
+        dir.path().join("final-file.txt").exists(),
+        "daemon should have done a final pull on last client disconnect"
     );
 }
 
@@ -633,15 +729,7 @@ fn status_reports_correct_info() {
     assert!(!check.status.success());
 
     // After setup: dir should exist
-    session::setup(
-        &claude_tool(),
-        &runner,
-        &config,
-        &session,
-        dir.path(),
-        false,
-    )
-    .unwrap();
+    daemon::daemon_setup(&runner, &config, &session, dir.path(), false).unwrap();
 
     let check = runner
         .run_ssh(&remote, &ssh::check_work_dir_exists(&session))

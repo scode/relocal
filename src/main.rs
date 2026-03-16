@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use cli::{Cli, Command, RemoteCommand, SyncCommand};
-use relocal::{commands, config, discovery, runner, session};
+use relocal::{commands, config, daemon, discovery, runner, session};
 use tracing_subscriber::FmtSubscriber;
 
 /// Finds the repo root and loads `relocal.toml`. Exits on failure.
@@ -82,7 +82,8 @@ fn main() {
         } => {
             let (root, cfg) = load_config();
             let session = resolve_session(session_name, &root);
-            if let Err(e) = commands::claude::run(&cfg, &session, &root, verbose, &claude_args) {
+            if let Err(e) = commands::claude::run(&cfg, &session, &root, cli.verbose, &claude_args)
+            {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
             }
@@ -93,7 +94,7 @@ fn main() {
         } => {
             let (root, cfg) = load_config();
             let session = resolve_session(session_name, &root);
-            if let Err(e) = commands::codex::run(&cfg, &session, &root, verbose, &codex_args) {
+            if let Err(e) = commands::codex::run(&cfg, &session, &root, cli.verbose, &codex_args) {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
             }
@@ -153,6 +154,15 @@ fn main() {
             let runner = runner::ProcessRunner::default();
             let session = resolve_session(session_name, &root);
             if let Err(e) = commands::destroy::run(&runner, &cfg, &session, true) {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Command::Daemon {
+            session_name,
+            repo_root,
+        } => {
+            if let Err(e) = daemon::run_daemon(&session_name, Path::new(&repo_root), verbose) {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
             }
