@@ -21,8 +21,15 @@ pub fn run(
     config: &Config,
     session_name: &str,
     repo_root: &Path,
-    verbose: bool,
+    verbosity: u8,
     codex_args: &[String],
 ) -> Result<()> {
-    super::session::run(&TOOL, config, session_name, repo_root, verbose, codex_args)
+    super::session::run(
+        &TOOL,
+        config,
+        session_name,
+        repo_root,
+        verbosity,
+        codex_args,
+    )
 }

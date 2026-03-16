@@ -39,4 +39,7 @@ pub enum Error {
 
     #[error("refusing to pull: remote session {session} failed git fsck (not a git repo or repository is corrupted).\nStderr: {stderr}")]
     RemoteGitFsckFailed { session: String, stderr: String },
+
+    #[error("failed to start session daemon: {message}")]
+    DaemonSpawnFailed { message: String },
 }

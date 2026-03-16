@@ -86,6 +86,15 @@ pub enum Command {
         /// Session name (defaults to directory name).
         session_name: Option<String>,
     },
+
+    /// Internal daemon process (not user-facing).
+    #[command(name = "_daemon", hide = true)]
+    Daemon {
+        /// Session name.
+        session_name: String,
+        /// Absolute path to the repo root.
+        repo_root: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -402,5 +411,20 @@ mod tests {
     fn verbosity_after_subcommand() {
         let cli = parse(&["relocal", "claude", "-vv"]);
         assert_eq!(cli.verbose, 2);
+    }
+
+    #[test]
+    fn daemon_subcommand() {
+        let cli = parse(&["relocal", "_daemon", "my-session", "/tmp/repo"]);
+        match &cli.command {
+            Command::Daemon {
+                session_name,
+                repo_root,
+            } => {
+                assert_eq!(session_name, "my-session");
+                assert_eq!(repo_root, "/tmp/repo");
+            }
+            _ => panic!("expected Daemon"),
+        }
     }
 }

@@ -108,12 +108,13 @@ grep -qxF 'relocal.toml' .gitignore 2>/dev/null || echo 'relocal.toml' >> .gitig
 # Install dependencies on the remote (Rust, Node, Claude Code, Codex, etc.)
 relocal remote install
 
-# Start a session
+# Start a session (run one or both concurrently)
 relocal claude    # Claude Code
 relocal codex     # Codex
 ```
 
-Once the session is running, a background loop keeps local in sync with remote changes automatically.
+Once a session is running, a background loop keeps local in sync with remote changes automatically. Multiple tools can
+run against the same session simultaneously — each gets its own interactive SSH session while sharing the sync loop.
 
 Both Claude and Codex authenticate during `relocal remote install`. Codex uses a device code flow (prints a URL and
 one-time code to enter in any browser).
