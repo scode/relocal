@@ -47,7 +47,7 @@ pub fn run(
             .map_err(std::io::Error::other)?;
 
         if !confirmed {
-            eprintln!("Aborted.");
+            info!("Aborted.");
             return Ok(());
         }
     }
@@ -62,7 +62,7 @@ pub fn run(
         .run_ssh(&config.remote, &ssh::remove_lock_file(session_name))?
         .check("rm lock file")?;
 
-    eprintln!("Session '{session_name}' destroyed.");
+    info!("Session '{session_name}' destroyed.");
     Ok(())
 }
 

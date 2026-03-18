@@ -237,6 +237,21 @@ pub fn daemon_flock_path(session: &str, remote: &str) -> PathBuf {
     std::env::temp_dir().join(format!("rlc-{prefix}-{hash:08x}.flock"))
 }
 
+/// Log file path for the session daemon's tracing output.
+///
+/// Keyed on (session, remote) like the other daemon paths. The daemon writes
+/// here instead of stderr so that interactive claude/codex sessions aren't
+/// cluttered with background sync noise. Use `relocal log` to tail it.
+pub fn daemon_log_path(session: &str, remote: &str) -> PathBuf {
+    let prefix: String = session.chars().take(20).collect();
+    let mut hasher = std::hash::DefaultHasher::new();
+    "daemon-log".hash(&mut hasher);
+    session.hash(&mut hasher);
+    remote.hash(&mut hasher);
+    let hash = hasher.finish() as u32;
+    std::env::temp_dir().join(format!("rlc-{prefix}-{hash:08x}.log"))
+}
+
 /// Acquires an exclusive advisory lock on the given file, blocking until available.
 ///
 /// Used by both the daemon client (to serialize daemon startup) and the daemon
@@ -675,5 +690,47 @@ mod tests {
         let filename = path.file_name().unwrap().to_str().unwrap();
         assert!(filename.starts_with("rlc-my-session-"));
         assert!(filename.ends_with(".flock"));
+    }
+
+    #[test]
+    fn daemon_log_path_format() {
+        let path = daemon_log_path("my-session", "user@host");
+        let filename = path.file_name().unwrap().to_str().unwrap();
+        assert!(filename.starts_with("rlc-my-session-"));
+        assert!(filename.ends_with(".log"));
+    }
+
+    #[test]
+    fn daemon_log_path_is_deterministic() {
+        assert_eq!(
+            daemon_log_path("my-session", "user@host"),
+            daemon_log_path("my-session", "user@host"),
+        );
+    }
+
+    #[test]
+    fn daemon_log_path_differs_by_session() {
+        assert_ne!(
+            daemon_log_path("a", "user@host"),
+            daemon_log_path("b", "user@host"),
+        );
+    }
+
+    #[test]
+    fn daemon_log_path_differs_by_remote() {
+        assert_ne!(
+            daemon_log_path("my-session", "user@host-a"),
+            daemon_log_path("my-session", "user@host-b"),
+        );
+    }
+
+    #[test]
+    fn daemon_log_path_does_not_collide_with_other_paths() {
+        let session = "my-session";
+        let remote = "user@host";
+        let log = daemon_log_path(session, remote);
+        assert_ne!(log, daemon_socket_path(session, remote));
+        assert_ne!(log, daemon_flock_path(session, remote));
+        assert_ne!(log, shared_control_socket_path(session, remote));
     }
 }

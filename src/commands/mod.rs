@@ -6,6 +6,7 @@ pub mod destroy;
 pub mod init;
 pub mod install;
 pub mod list;
+pub mod log;
 pub mod nuke;
 pub mod session;
 pub mod ssh;

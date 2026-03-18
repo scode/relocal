@@ -23,3 +23,10 @@ about sync targets, but the current implementation silently does the wrong thing
   `relocal sync pull` manually.
 - The daemon identity should include repo_root after all, giving each checkout its own daemon (but then two daemons
   fight over the same remote directory and lock file, which is worse).
+
+## Daemon errors are hard to find
+
+When the daemon fails during startup (e.g., stale lock file), the error is logged to the daemon's log file in `$TMPDIR`
+— not to the client's terminal. The client only sees a generic "daemon did not signal readiness" message with no hint
+about the root cause. The user has to know to run `relocal log` (or manually find the log file) to see what actually
+went wrong. We should surface the daemon's last error in the client-side failure message.

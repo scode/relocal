@@ -3,30 +3,32 @@
 //! Checks the remote for: working directory existence and tool installation.
 //! All checks are done via SSH through the [`CommandRunner`] trait.
 
+use tracing::info;
+
 use crate::config::Config;
 use crate::error::Result;
 use crate::runner::CommandRunner;
 use crate::ssh;
 
-/// Prints session status to stderr.
+/// Prints session status.
 pub fn run(runner: &dyn CommandRunner, config: &Config, session_name: &str) -> Result<()> {
-    eprintln!("Session:    {session_name}");
-    eprintln!("Remote:     {}", config.remote);
-    eprintln!("Remote dir: {}", ssh::remote_work_dir(session_name));
+    info!("Session:    {session_name}");
+    info!("Remote:     {}", config.remote);
+    info!("Remote dir: {}", ssh::remote_work_dir(session_name));
 
     let dir_exists = ssh::run_status_check(
         runner,
         &config.remote,
         &ssh::check_work_dir_exists(session_name),
     )?;
-    eprintln!(
+    info!(
         "Directory:  {}",
         if dir_exists { "exists" } else { "not found" }
     );
 
     let claude_installed =
         ssh::run_status_check(runner, &config.remote, &ssh::check_claude_installed())?;
-    eprintln!(
+    info!(
         "Claude:     {}",
         if claude_installed {
             "installed"
@@ -37,7 +39,7 @@ pub fn run(runner: &dyn CommandRunner, config: &Config, session_name: &str) -> R
 
     let codex_installed =
         ssh::run_status_check(runner, &config.remote, &ssh::check_codex_installed())?;
-    eprintln!(
+    info!(
         "Codex:      {}",
         if codex_installed {
             "installed"
