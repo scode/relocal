@@ -347,8 +347,12 @@ The daemon uses several files in `$TMPDIR`, all following the same prefix+hash n
 
 - `.sock` — Unix domain socket for client connections (mode 0600).
 - `.flock` — advisory lock file for serializing daemon startup/shutdown (mode 0600).
-- `.log` — tracing output. The daemon writes here instead of stderr so interactive sessions aren't cluttered with
-  background sync noise. Use `relocal log` to tail it.
+- `.log` — tracing output (mode 0600). The daemon writes here instead of stderr so interactive sessions aren't cluttered
+  with background sync noise. Use `relocal log` to tail it.
+
+All daemon files must be created with mode 0600 (owner-only). Log files contain the remote hostname and session details;
+on a shared system with a world-readable `$TMPDIR` (e.g. Linux `/tmp`), permissive defaults would expose this to other
+users.
 
 Clients connect to this socket to register their presence. The protocol is minimal:
 
