@@ -94,8 +94,6 @@ fn print_summary(session_name: &str, config: &Config) {
         config.remote,
         ssh::remote_work_dir(session_name)
     );
-    info!("To pull latest changes: relocal sync pull {session_name}");
-    info!("To push local changes:  relocal sync push {session_name}");
 }
 
 fn print_dirty_shutdown_message(session_name: &str, config: &Config) {
