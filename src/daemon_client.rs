@@ -160,6 +160,20 @@ pub fn connect_or_spawn(
     Ok(conn)
 }
 
+/// Returns true if a daemon is actively listening for the given session.
+///
+/// Probes the daemon socket with a connect+disconnect. The brief connection
+/// is harmless — the daemon sees a client connect and immediately disconnect,
+/// which has no effect unless it was the only client (in which case the daemon
+/// would shut down, but that can't happen here because we're probing *before*
+/// any session is running).
+pub fn is_daemon_running(session_name: &str, remote: &str) -> bool {
+    let socket_path = ssh::daemon_socket_path(session_name, remote);
+    // A successful connect proves the daemon is accept()ing. We don't need
+    // to read the control path — just drop the stream immediately.
+    UnixStream::connect(&socket_path).is_ok()
+}
+
 /// Attempts to connect to an existing daemon socket and read the control path.
 ///
 /// Uses `BufReader::read_line` rather than a raw `read()` to correctly

@@ -445,7 +445,7 @@ fn destroy_removes_dir() {
     daemon::daemon_setup(&runner, &config, &session, dir.path(), false).unwrap();
 
     // Destroy (no confirm in test)
-    destroy::run(&runner, &config, &session, false).unwrap();
+    destroy::run(&runner, &config, &session, false, false).unwrap();
 
     assert!(!remote_file_exists(&remote, &remote_dir(&session)));
 }

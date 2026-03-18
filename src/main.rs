@@ -218,7 +218,7 @@ fn main() {
             let (root, cfg) = load_config();
             let runner = runner::ProcessRunner::default();
             let session = resolve_session(session_name, &root);
-            if let Err(e) = commands::destroy::run(&runner, &cfg, &session, true) {
+            if let Err(e) = commands::destroy::run(&runner, &cfg, &session, true, true) {
                 error!("{e}");
                 std::process::exit(1);
             }

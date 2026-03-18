@@ -205,7 +205,11 @@ Shows each session name and the size of its working copy.
 
 ### `relocal destroy [session-name]`
 
-Removes the remote working copy `~/relocal/<session-name>/`.
+Removes the remote working copy `~/relocal/<session-name>/` and local daemon artifacts (socket, flock, log files in
+`$TMPDIR`).
+
+Refuses to proceed if a daemon is running for the session (detected by probing the daemon socket). The user must exit
+all active claude/codex/ssh sessions first.
 
 Prompts for confirmation before deleting.
 
