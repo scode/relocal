@@ -37,7 +37,10 @@ pub fn run(
     extra_args: &[String],
 ) -> Result<()> {
     let daemon_conn =
-        daemon_client::connect_or_spawn(session_name, &config.remote, repo_root, verbosity)?;
+        daemon_client::connect_or_spawn(session_name, &config.remote, repo_root, verbosity)
+            .inspect_err(|_| {
+                info!("Run `relocal log {session_name}` to see daemon logs.");
+            })?;
     let runner = ProcessRunner::with_control_path(daemon_conn.control_master_path());
 
     check_tool_installed(tool, &runner, config)?;
