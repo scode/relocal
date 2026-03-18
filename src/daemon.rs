@@ -39,18 +39,17 @@ const INITIAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// flock while waiting for the control path message, but the daemon can't
 /// send the control path without entering the poll loop, which it can't do
 /// while blocked on the flock. See the shutdown section for details.
-pub fn run_daemon(session_name: &str, repo_root: &Path, verbose: bool) -> Result<()> {
-    let toml_str = std::fs::read_to_string(repo_root.join("relocal.toml")).map_err(|e| {
-        Error::DaemonSpawnFailed {
-            message: format!("failed to read relocal.toml: {e}"),
-        }
-    })?;
-    let config = Config::parse(&toml_str)?;
-
+pub fn run_daemon(
+    config: &Config,
+    session_name: &str,
+    repo_root: &Path,
+    verbose: bool,
+) -> Result<()> {
+    info!("Connecting to {}...", config.remote);
     let control_master = SshControlMaster::start_shared(&config.remote, session_name)?;
     let runner = ProcessRunner::with_control_path(control_master.socket_path());
 
-    daemon_setup(&runner, &config, session_name, repo_root, verbose)?;
+    daemon_setup(&runner, config, session_name, repo_root, verbose)?;
 
     let socket_path = ssh::daemon_socket_path(session_name, &config.remote);
     let _ = std::fs::remove_file(&socket_path);
@@ -81,7 +80,7 @@ pub fn run_daemon(session_name: &str, repo_root: &Path, verbose: bool) -> Result
     let exit_result = poll_loop(
         &listener,
         &runner,
-        &config,
+        config,
         session_name,
         repo_root,
         verbose,
@@ -115,11 +114,11 @@ pub fn run_daemon(session_name: &str, repo_root: &Path, verbose: bool) -> Result
         .and_then(|f| ssh::acquire_flock(&f).ok().map(|()| f));
     // _shutdown_flock is held (not dropped) until run_daemon returns.
 
-    info!("Daemon shutting down...");
-    if let Err(e) = sync_pull(&runner, &config, session_name, repo_root, verbose) {
+    info!("Pulling final changes from remote...");
+    if let Err(e) = sync_pull(&runner, config, session_name, repo_root, verbose) {
         warn!("Final sync pull failed: {e}");
     }
-    if let Err(e) = cleanup(&runner, &config, session_name) {
+    if let Err(e) = cleanup(&runner, config, session_name) {
         warn!("Lock file cleanup failed: {e}");
     }
     drop(control_master);

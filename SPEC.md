@@ -70,7 +70,7 @@ All commands except `init` require a `relocal.toml` in the current directory.
 
 Global flags:
 
-- `-v` / `-vv` / `-vvv`: Increase log verbosity (INFO / DEBUG / TRACE). Default level is WARN.
+- `-v` / `-vv`: Increase log verbosity (DEBUG / TRACE). Default level is INFO.
 
 ### `relocal init`
 
@@ -209,6 +209,14 @@ Removes the remote working copy `~/relocal/<session-name>/`.
 
 Prompts for confirmation before deleting.
 
+### `relocal log [session-name]`
+
+Tails the daemon log file for the given session. Execs `tail -f` on the log file at `$TMPDIR/rlc-<prefix>-<hash>.log`,
+so standard `tail` behavior applies (Ctrl-C to stop).
+
+The daemon writes its tracing output to this file rather than stderr, keeping the client terminal clean during
+interactive claude/codex sessions.
+
 ### `relocal remote nuke`
 
 Deletes the entire `~/relocal/` directory on the remote, including all sessions. Does **not** uninstall APT packages,
@@ -332,11 +340,15 @@ directories for different local checkouts should use different session names.
 The daemon is tool-agnostic — it does not know whether clients are running Claude, Codex, or any future tool. Tool
 installation checks are the client's responsibility.
 
-### Daemon Socket
+### Daemon Files
 
-The daemon listens on a Unix domain socket at `$TMPDIR/rlc-<prefix>-<hash>.sock`, where prefix and hash follow the same
-scheme as the ControlMaster socket path — hashing `(session_name, remote)` to keep the total under 104 bytes. The socket
-is created with mode 0600 (owner-only). The flock file (`$TMPDIR/rlc-<prefix>-<hash>.flock`) is also set to 0600.
+The daemon uses several files in `$TMPDIR`, all following the same prefix+hash naming scheme keyed on
+`(session_name, remote)`:
+
+- `.sock` — Unix domain socket for client connections (mode 0600).
+- `.flock` — advisory lock file for serializing daemon startup/shutdown (mode 0600).
+- `.log` — tracing output. The daemon writes here instead of stderr so interactive sessions aren't cluttered with
+  background sync noise. Use `relocal log` to tail it.
 
 Clients connect to this socket to register their presence. The protocol is minimal:
 
@@ -497,8 +509,9 @@ The polling approach is less efficient than hook-triggered syncs — it runs rsy
 
 ## Output and UX
 
-- Progress: rsync is run with default output. In verbose mode (`-v`+), rsync's `--progress` flag is added so the user
-  can see file transfer progress.
+- The default log level is INFO. Client-side progress (connecting, launching, syncing) is logged to stderr via tracing.
+  The daemon logs to a file instead (see Daemon Files above).
+- In verbose mode (`-v`+), rsync's `--progress` flag is added so the user can see file transfer progress.
 - Errors: printed to stderr with context (which operation failed, the remote host, the session name).
 - Colors: not required. Plain text output. Can be added as a future improvement.
 

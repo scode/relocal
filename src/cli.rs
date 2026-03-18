@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 #[derive(Debug, Parser)]
 #[command(name = "relocal", version)]
 pub struct Cli {
-    /// Increase log verbosity (-v = INFO, -vv = DEBUG, -vvv = TRACE).
+    /// Increase log verbosity (-v = DEBUG, -vv = TRACE).
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
     pub verbose: u8,
 
@@ -21,9 +21,8 @@ impl Cli {
     /// Maps the verbosity count to a tracing filter level.
     pub fn log_level(&self) -> tracing::Level {
         match self.verbose {
-            0 => tracing::Level::WARN,
-            1 => tracing::Level::INFO,
-            2 => tracing::Level::DEBUG,
+            0 => tracing::Level::INFO,
+            1 => tracing::Level::DEBUG,
             _ => tracing::Level::TRACE,
         }
     }
@@ -74,6 +73,12 @@ pub enum Command {
 
     /// Show session status.
     Status {
+        /// Session name (defaults to directory name).
+        session_name: Option<String>,
+    },
+
+    /// Tail the daemon log for a session.
+    Log {
         /// Session name (defaults to directory name).
         session_name: Option<String>,
     },
@@ -380,30 +385,40 @@ mod tests {
     }
 
     #[test]
-    fn verbosity_default_warn() {
-        let cli = parse(&["relocal", "init"]);
-        assert_eq!(cli.verbose, 0);
-        assert_eq!(cli.log_level(), tracing::Level::WARN);
+    fn log_no_session() {
+        let cli = parse(&["relocal", "log"]);
+        assert!(matches!(cli.command, Command::Log { session_name: None }));
     }
 
     #[test]
-    fn verbosity_v_info() {
-        let cli = parse(&["relocal", "-v", "init"]);
-        assert_eq!(cli.verbose, 1);
+    fn log_with_session() {
+        let cli = parse(&["relocal", "log", "s1"]);
+        match &cli.command {
+            Command::Log { session_name } => {
+                assert_eq!(session_name.as_deref(), Some("s1"));
+            }
+            _ => panic!("expected Log"),
+        }
+    }
+
+    #[test]
+    fn verbosity_default_info() {
+        let cli = parse(&["relocal", "init"]);
+        assert_eq!(cli.verbose, 0);
         assert_eq!(cli.log_level(), tracing::Level::INFO);
     }
 
     #[test]
-    fn verbosity_vv_debug() {
-        let cli = parse(&["relocal", "-vv", "init"]);
-        assert_eq!(cli.verbose, 2);
+    fn verbosity_v_debug() {
+        let cli = parse(&["relocal", "-v", "init"]);
+        assert_eq!(cli.verbose, 1);
         assert_eq!(cli.log_level(), tracing::Level::DEBUG);
     }
 
     #[test]
-    fn verbosity_vvv_trace() {
-        let cli = parse(&["relocal", "-vvv", "init"]);
-        assert_eq!(cli.verbose, 3);
+    fn verbosity_vv_trace() {
+        let cli = parse(&["relocal", "-vv", "init"]);
+        assert_eq!(cli.verbose, 2);
         assert_eq!(cli.log_level(), tracing::Level::TRACE);
     }
 

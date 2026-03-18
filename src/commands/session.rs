@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::config::Config;
 use crate::daemon_client;
@@ -42,10 +42,10 @@ pub fn run(
 
     check_tool_installed(tool, &runner, config)?;
 
-    let ssh_result = runner.run_ssh_interactive(
-        &config.remote,
-        &(tool.start_session)(session_name, extra_args),
-    );
+    let remote_cmd = (tool.start_session)(session_name, extra_args);
+    info!("Launching {} on {}...", tool.display_name, config.remote);
+
+    let ssh_result = runner.run_ssh_interactive(&config.remote, &remote_cmd);
 
     // DaemonConnection is dropped here, signaling the daemon that this
     // client is done. The daemon handles final pull and cleanup when the
@@ -89,24 +89,24 @@ fn check_tool_installed(
 }
 
 fn print_summary(session_name: &str, config: &Config) {
-    eprintln!();
-    eprintln!("Session ended: {session_name}");
-    eprintln!("Remote dir:    {}", ssh::remote_work_dir(session_name));
-    eprintln!("Remote host:   {}", config.remote);
-    eprintln!();
-    eprintln!("To pull latest changes: relocal sync pull {session_name}");
-    eprintln!("To push local changes:  relocal sync push {session_name}");
+    info!(
+        "Session ended: {session_name} (remote: {}, dir: {})",
+        config.remote,
+        ssh::remote_work_dir(session_name)
+    );
+    info!("To pull latest changes: relocal sync pull {session_name}");
+    info!("To push local changes:  relocal sync push {session_name}");
 }
 
 fn print_dirty_shutdown_message(session_name: &str, config: &Config) {
-    eprintln!();
-    eprintln!("Session interrupted: {session_name}");
-    eprintln!("Remote dir: {}", ssh::remote_work_dir(session_name));
-    eprintln!("Remote host: {}", config.remote);
-    eprintln!();
-    eprintln!("There may be unsynchronized work on the remote.");
-    eprintln!("Use `relocal sync pull {session_name}` to fetch remote changes,");
-    eprintln!("or `relocal sync push {session_name}` to overwrite with local state.");
+    warn!(
+        "Session interrupted: {session_name} (remote: {}, dir: {})",
+        config.remote,
+        ssh::remote_work_dir(session_name)
+    );
+    warn!("There may be unsynchronized work on the remote.");
+    warn!("Use `relocal sync pull {session_name}` to fetch remote changes,");
+    warn!("or `relocal sync push {session_name}` to overwrite with local state.");
 }
 
 #[cfg(test)]

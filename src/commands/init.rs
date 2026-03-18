@@ -6,6 +6,8 @@
 
 use std::path::Path;
 
+use tracing::{info, warn};
+
 use crate::error::Result;
 
 /// Generates the TOML content for a `relocal.toml` file from collected inputs.
@@ -45,7 +47,7 @@ pub fn generate_toml(remote: &str, exclude: &[String], apt_packages: &[String]) 
 pub fn run(dir: &Path) -> Result<()> {
     let toml_path = dir.join("relocal.toml");
     if toml_path.exists() {
-        eprintln!("relocal.toml already exists in {}", dir.display());
+        warn!("relocal.toml already exists in {}", dir.display());
         return Ok(());
     }
 
@@ -72,7 +74,7 @@ pub fn run(dir: &Path) -> Result<()> {
     let content = generate_toml(&remote, &exclude, &apt_packages);
     std::fs::write(&toml_path, &content)?;
 
-    eprintln!("Created {}", toml_path.display());
+    info!("Created {}", toml_path.display());
     Ok(())
 }
 

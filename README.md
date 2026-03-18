@@ -126,6 +126,7 @@ relocal ssh [session-name]        # open a shell in the remote session directory
 relocal sync pull [session-name]  # fetch remote changes to local
 relocal sync push [session-name]  # push local changes to remote
 relocal status [session-name]     # show session info
+relocal log [session-name]        # tail the daemon log for a session
 relocal list                      # list sessions on the remote
 relocal destroy [session-name]    # remove one session's remote directory
 relocal remote nuke               # wipe all relocal state on the remote

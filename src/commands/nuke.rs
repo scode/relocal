@@ -28,7 +28,7 @@ pub fn run(runner: &dyn CommandRunner, config: &Config, confirm: bool) -> Result
             .map_err(std::io::Error::other)?;
 
         if !confirmed {
-            eprintln!("Aborted.");
+            info!("Aborted.");
             return Ok(());
         }
     }
@@ -38,7 +38,7 @@ pub fn run(runner: &dyn CommandRunner, config: &Config, confirm: bool) -> Result
         .run_ssh(&config.remote, &ssh::rm_relocal_dir())?
         .check("rm ~/relocal/")?;
 
-    eprintln!("Done. Run `relocal remote install` to set up again.");
+    info!("Done. Run `relocal remote install` to set up again.");
     Ok(())
 }
 

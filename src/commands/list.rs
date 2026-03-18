@@ -2,6 +2,8 @@
 //!
 //! Lists directories under `~/relocal/` and prints each session name.
 
+use tracing::info;
+
 use crate::config::Config;
 use crate::error::Result;
 use crate::runner::CommandRunner;
@@ -12,18 +14,17 @@ pub fn run(runner: &dyn CommandRunner, config: &Config) -> Result<()> {
     let output = runner.run_ssh(&config.remote, &ssh::list_sessions())?;
 
     if !output.status.success() || output.stdout.trim().is_empty() {
-        eprintln!("No sessions found on {}.", config.remote);
+        info!("No sessions found on {}.", config.remote);
         return Ok(());
     }
 
     for line in output.stdout.lines() {
         let line = line.trim();
         if !line.is_empty() {
-            // Output format from SSH: "name\tsize"
             if let Some((name, size)) = line.split_once('\t') {
-                eprintln!("{name}\t{size}");
+                info!("{name}\t{size}");
             } else {
-                eprintln!("{line}");
+                info!("{line}");
             }
         }
     }
