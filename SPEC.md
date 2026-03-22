@@ -22,13 +22,12 @@ scope of this spec.
 
 ## Configuration
 
-A single `relocal.toml` file in the repo root. Created by `relocal init`.
+Configuration comes from two layers, merged with per-field override semantics:
 
-The repo root is discovered by checking the current working directory for a `relocal.toml` file. Unlike tools that walk
-up the directory tree, relocal intentionally only checks the CWD. This prevents accidentally discovering a
-`relocal.toml` high in the tree (e.g. in `$HOME`) which would cause the tool to sync an unexpectedly large directory
-with `rsync --delete`. If not found, commands that require it fail with an error suggesting `relocal init` or running
-from the project root.
+- **User config**: `~/.relocal/config.toml` — user-wide defaults (e.g., a default remote host).
+- **Project config**: `relocal.toml` in the repo root — per-repo overrides. Created by `relocal init`.
+
+Both files use the same schema:
 
 ```toml
 remote = "user@host"
@@ -42,7 +41,26 @@ exclude = [".env", "secrets/"]
 apt_packages = ["libssl-dev", "pkg-config"]
 ```
 
-All fields except `remote` are optional.
+All fields except `remote` are optional at each layer. The merged result must have `remote`.
+
+### Merge Semantics
+
+For each field, the project config wins if it specifies a value; otherwise the user config's value is used. List fields
+(`exclude`, `apt_packages`) are replaced entirely, not concatenated — if a project config specifies `exclude`, it
+completely overrides the user-level `exclude`.
+
+### User Config
+
+Located at `~/.relocal/config.toml`. Created manually by the user. If the file does not exist, it is silently skipped.
+If it exists but cannot be parsed, relocal exits with an error.
+
+### Project Config Discovery
+
+The repo root is discovered by checking the current working directory for a `relocal.toml` file. Unlike tools that walk
+up the directory tree, relocal intentionally only checks the CWD. This prevents accidentally discovering a
+`relocal.toml` high in the tree (e.g. in `$HOME`) which would cause the tool to sync an unexpectedly large directory
+with `rsync --delete`. If not found, commands that require it fail with an error suggesting `relocal init` or running
+from the project root.
 
 ## Session Naming
 

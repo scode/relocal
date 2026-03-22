@@ -99,7 +99,11 @@ su - "$NEW_USER" -c 'sudo -n true && echo "passwordless sudo OK"'
 # Install relocal locally
 cargo install --path .
 
-# In your project directory, create a config file
+# Set your default remote (one-time, shared across all repos)
+mkdir -p ~/.relocal
+echo 'remote = "user@host"' > ~/.relocal/config.toml
+
+# In your project directory, create a per-repo config (optional if user config has remote)
 cd ~/my-project
 relocal init
 # Follow the prompts and set remote to user@host

@@ -19,8 +19,8 @@ pub enum Error {
     )]
     ConfigNotFound { start_dir: PathBuf },
 
-    #[error("failed to parse relocal.toml: {reason}")]
-    ConfigParse { reason: String },
+    #[error("failed to parse {path}: {reason}")]
+    ConfigParse { path: String, reason: String },
 
     #[error("invalid session name {name:?}: {reason}")]
     InvalidSessionName { name: String, reason: String },

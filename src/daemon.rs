@@ -12,7 +12,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::commands::sync::{sync_pull, sync_push};
 use crate::config::Config;
@@ -46,7 +46,12 @@ pub fn run_daemon(
     verbose: bool,
 ) -> Result<()> {
     info!("Connecting to {}...", config.remote);
+    debug!("Establishing SSH ControlMaster...");
     let control_master = SshControlMaster::start_shared(&config.remote, session_name)?;
+    debug!(
+        "ControlMaster established at {}",
+        control_master.socket_path().display()
+    );
     let runner = ProcessRunner::with_control_path(control_master.socket_path());
 
     daemon_setup(&runner, config, session_name, repo_root, verbose)?;
@@ -68,7 +73,10 @@ pub fn run_daemon(
             message: format!("failed to set socket nonblocking: {e}"),
         })?;
 
+    debug!("Daemon socket bound at {}", socket_path.display());
+
     // Signal readiness to the spawning client.
+    debug!("Signaling READY to client...");
     let _ = std::io::stdout().write_all(b"READY\n");
     let _ = std::io::stdout().flush();
     // The spawning client blocks on read_line() waiting for READY. Closing
@@ -151,16 +159,22 @@ pub fn daemon_setup(
             session: session_name.to_string(),
         });
     }
+    debug!("No stale session found");
 
     info!("Creating remote working directory...");
     runner
         .run_ssh(&config.remote, &ssh::mkdir_work_dir(session_name))?
         .check("mkdir")?;
+    debug!("Remote directory created");
+
     runner
         .run_ssh(&config.remote, &ssh::create_lock_file(session_name))?
         .check("create lock file")?;
+    debug!("Lock file created");
 
+    debug!("Starting initial rsync push...");
     sync_push(runner, config, session_name, repo_root, verbose)?;
+    debug!("Initial rsync push complete");
 
     Ok(())
 }
