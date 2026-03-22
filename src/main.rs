@@ -9,17 +9,21 @@ use relocal::{commands, config, daemon, discovery, runner, session, ssh};
 use tracing::error;
 use tracing_subscriber::FmtSubscriber;
 
-/// Finds the repo root and loads `relocal.toml`. Exits on failure.
+/// Returns the user's home directory, or exits with an error.
+fn home_dir() -> PathBuf {
+    dirs::home_dir().unwrap_or_else(|| {
+        error!("could not determine home directory");
+        std::process::exit(1);
+    })
+}
+
+/// Finds the repo root and loads merged config (user + project). Exits on failure.
 fn load_config() -> (PathBuf, config::Config) {
     let root = discovery::find_repo_root(&std::env::current_dir().unwrap()).unwrap_or_else(|e| {
         error!("{e}");
         std::process::exit(1);
     });
-    let toml_str = std::fs::read_to_string(root.join("relocal.toml")).unwrap_or_else(|e| {
-        error!("reading relocal.toml: {e}");
-        std::process::exit(1);
-    });
-    let cfg = config::Config::parse(&toml_str).unwrap_or_else(|e| {
+    let cfg = config::load_merged_config(&home_dir(), &root).unwrap_or_else(|e| {
         error!("{e}");
         std::process::exit(1);
     });
@@ -59,12 +63,7 @@ fn init_daemon_tracing(
     session_name: &str,
     repo_root: &str,
 ) -> config::Config {
-    let toml_str = std::fs::read_to_string(Path::new(repo_root).join("relocal.toml"))
-        .unwrap_or_else(|e| {
-            eprintln!("Error reading relocal.toml: {e}");
-            std::process::exit(1);
-        });
-    let cfg = config::Config::parse(&toml_str).unwrap_or_else(|e| {
+    let cfg = config::load_merged_config(&home_dir(), Path::new(repo_root)).unwrap_or_else(|e| {
         eprintln!("Error: {e}");
         std::process::exit(1);
     });

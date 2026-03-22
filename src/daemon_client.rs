@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::error::{Error, Result};
 use crate::ssh;
@@ -54,11 +54,15 @@ pub fn connect_or_spawn(
 ) -> Result<DaemonConnection> {
     let socket_path = ssh::daemon_socket_path(session_name, remote);
 
+    debug!("Checking for existing daemon at {}", socket_path.display());
+
     // Fast path: daemon is already running.
     if let Ok(conn) = try_connect(&socket_path) {
         info!("Connected to existing session daemon");
         return Ok(conn);
     }
+
+    debug!("No existing daemon found, acquiring startup flock...");
 
     // Slow path: acquire flock and spawn daemon if needed.
     let flock_path = ssh::daemon_flock_path(session_name, remote);
@@ -77,6 +81,8 @@ pub fn connect_or_spawn(
     // is shutting down — it holds this flock through cleanup to prevent us
     // from spawning a replacement that would hit a stale remote lock.
     ssh::acquire_flock(&flock_file)?;
+
+    debug!("Flock acquired, double-checking for daemon...");
 
     // Double-check: another process may have started the daemon while we waited.
     if let Ok(conn) = try_connect(&socket_path) {
@@ -98,6 +104,12 @@ pub fn connect_or_spawn(
     let exe = std::env::current_exe().map_err(|e| Error::DaemonSpawnFailed {
         message: format!("failed to determine current executable: {e}"),
     })?;
+    debug!(
+        "Spawning daemon: {} _daemon {} {}",
+        exe.display(),
+        session_name,
+        repo_root_str
+    );
 
     let mut cmd = Command::new(&exe);
     // Propagate the full verbosity level so the daemon gets the same
@@ -114,6 +126,11 @@ pub fn connect_or_spawn(
         .map_err(|e| Error::DaemonSpawnFailed {
             message: format!("failed to spawn daemon process: {e}"),
         })?;
+
+    debug!(
+        "Daemon spawned (pid={}), waiting for READY signal...",
+        child.id()
+    );
 
     // Wait for the daemon to signal readiness.
     let stdout = child
@@ -150,6 +167,8 @@ pub fn connect_or_spawn(
     std::thread::spawn(move || {
         let _ = child.wait();
     });
+
+    debug!("Connecting to daemon socket...");
 
     // Connect to the now-running daemon.
     let conn = try_connect(&socket_path).map_err(|_| Error::DaemonSpawnFailed {

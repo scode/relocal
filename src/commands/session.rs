@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
 use crate::daemon_client;
@@ -36,14 +36,20 @@ pub fn run(
     verbosity: u8,
     extra_args: &[String],
 ) -> Result<()> {
+    debug!("Connecting to session daemon for {session_name}...");
     let daemon_conn =
         daemon_client::connect_or_spawn(session_name, &config.remote, repo_root, verbosity)
             .inspect_err(|_| {
                 info!("Run `relocal log {session_name}` to see daemon logs.");
             })?;
+    debug!(
+        "Daemon connected, control master at {}",
+        daemon_conn.control_master_path().display()
+    );
     let runner = ProcessRunner::with_control_path(daemon_conn.control_master_path());
 
     check_tool_installed(tool, &runner, config)?;
+    debug!("{} installation verified", tool.display_name);
 
     let remote_cmd = (tool.start_session)(session_name, extra_args);
     info!("Launching {} on {}...", tool.display_name, config.remote);
