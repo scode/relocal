@@ -54,20 +54,33 @@ completely overrides the user-level `exclude`.
 Located at `~/.relocal/config.toml`. Created manually by the user. If the file does not exist, it is silently skipped.
 If it exists but cannot be parsed, relocal exits with an error.
 
-### Project Config Discovery
+### Repo Root Discovery
 
-The repo root is discovered by checking the current working directory for a `relocal.toml` file. Unlike tools that walk
-up the directory tree, relocal intentionally only checks the CWD. This prevents accidentally discovering a
-`relocal.toml` high in the tree (e.g. in `$HOME`) which would cause the tool to sync an unexpectedly large directory
-with `rsync --delete`. If not found, commands that require it fail with an error suggesting `relocal init` or running
-from the project root.
+The repo root is discovered by checking the current working directory for markers, in order:
+
+1. `relocal.toml` — if present, the directory is the repo root (and project config is loaded).
+2. `.git` (directory or file) — if present, the directory is a git repo root.
+
+Unlike tools that walk up the directory tree, relocal intentionally only checks the CWD. This prevents accidentally
+syncing an unexpectedly large directory with `rsync --delete`. If neither marker is found, commands that require a repo
+root fail with an error suggesting `relocal init` or running from the project root.
+
+Running without a `relocal.toml` requires that the merged config (user config alone, in this case) provides `remote`.
+
+### Pull Safety
+
+Before running `rsync --delete` on a pull, relocal validates that the local destination contains either `relocal.toml`
+or `.git`. This is a second line of defense against higher-level bugs passing the wrong path to rsync.
 
 ## Session Naming
 
 Each session gets its own remote working copy at `~/relocal/<session-name>/`.
 
-The default session name is the local repo directory name. An explicit name can be passed to commands that accept
-`[session-name]`.
+The default session name is `<dirname>-<hash>` where `dirname` is the repo root directory name and the hash is derived
+from the canonical local path and the git origin URL (SHA-256, truncated to 8 hex chars). This prevents collisions
+between different repos that share a directory name, or different checkouts of the same repo.
+
+An explicit name can be passed to commands that accept `[session-name]`.
 
 Session names must contain only alphanumeric characters, hyphens, and underscores. Names containing other characters
 (spaces, slashes, dots, etc.) are rejected with an error.
@@ -84,7 +97,8 @@ concurrency against the same session is prevented by the remote lock file.
 
 ## CLI Commands
 
-All commands except `init` require a `relocal.toml` in the current directory.
+All commands except `init` require a repo root (a directory containing `relocal.toml` or `.git`). See
+[Repo Root Discovery](#repo-root-discovery).
 
 Global flags:
 
@@ -149,7 +163,7 @@ Main command. Connects to (or spawns) a session daemon, then launches an interac
 
 Steps:
 
-1. Read `relocal.toml` from the repo root. Fail if not found.
+1. Discover the repo root and load merged config (user + project). Fail if `remote` is not set.
 2. Validate the session name (see [Session Naming](#session-naming)).
 3. Connect to the session daemon for this session name, or spawn one if none is running (see
    [Session Daemon](#session-daemon)). The daemon owns the SSH ControlMaster, background sync loop, and remote lock
@@ -456,8 +470,8 @@ manual cleanup via `relocal destroy`.
 
 ### `relocal _daemon`
 
-Hidden internal subcommand. Not intended for direct use. Accepts the session name and repo root path as arguments. Reads
-`relocal.toml` from the repo root for the remote host and exclusion patterns.
+Hidden internal subcommand. Not intended for direct use. Accepts the session name and repo root path as arguments. Loads
+merged config (user + project) from the repo root for the remote host and exclusion patterns.
 
 ## Background Sync Loop
 
@@ -512,11 +526,11 @@ The polling approach is less efficient than hook-triggered syncs — it runs rsy
   `git fsck --strict --full --no-dangling` is run on the remote session directory. If it fails, the pull is refused to
   prevent `rsync --delete` from wiping the local tree.
 - **Pull safety — local destination validation**: The command runner validates the local pull target before invoking
-  rsync. It canonicalizes the path and verifies that `relocal.toml` exists there. This is a last line of defense against
-  a bug in higher-level code passing the wrong `repo_root` to `rsync --delete`. Push does not validate (the destructive
-  side of `--delete` on push is the remote, not local).
-- **Missing `relocal.toml`**: All commands except `init` fail with a clear error message. Only the current working
-  directory is checked (no upward walk).
+  rsync. It canonicalizes the path and verifies that `relocal.toml` or `.git` exists there. This is a last line of
+  defense against a bug in higher-level code passing the wrong `repo_root` to `rsync --delete`. Push does not validate
+  (the destructive side of `--delete` on push is the remote, not local).
+- **No repo root found**: All commands except `init` fail with a clear error message if neither `relocal.toml` nor
+  `.git` is found in the current directory. Only the current working directory is checked (no upward walk).
 - **Remote directory does not exist**: `claude`/`codex` creates it. `ssh` fails (the remote `cd` fails and the user sees
   the shell error). `sync` fails (rsync reports the error). `status` reports that the directory does not exist (does not
   fail). `destroy` fails with a message that the session was not found.
@@ -580,14 +594,21 @@ Unit tests cover all pure logic. They do not require SSH, network access, or a r
 
 - Valid names: `my-session`, `session_1`, `foo`, `A-B_C-123`.
 - Invalid names: `my session` (space), `a/b` (slash), `a.b` (dot), `../escape` (traversal), empty string.
-- Default name derived from directory name (e.g., `/home/user/my-project` → `my-project`).
-- Default derivation when directory name contains invalid characters → error with clear message.
+- Hashed name format: `<dirname>-<8-hex-chars>`, deterministic for the same path.
+- Hashed name differs for different paths or different git origins.
+- Hashed name rejects directory names with invalid characters (e.g., dots) rather than sanitizing.
+- Hashed name includes git origin URL in hash input (verified by comparing with/without origin).
 
 #### Repo Root Discovery
 
 - `relocal.toml` in current directory → returns current directory.
-- `relocal.toml` only in parent (not CWD) → error (does not walk up).
-- No `relocal.toml` in CWD → error.
+- `.git` directory with `HEAD` file in current directory → returns current directory.
+- `.git` file starting with `gitdir:` in current directory (worktree) → returns current directory.
+- `.git` directory without `HEAD` → rejected (not a valid git repo).
+- `.git` file without `gitdir:` prefix → rejected.
+- `relocal.toml` sufficient without `.git`.
+- `relocal.toml` or `.git` only in parent (not CWD) → error (does not walk up).
+- Neither `relocal.toml` nor `.git` in CWD → error.
 
 #### rsync Argument Construction
 
@@ -603,7 +624,7 @@ Unit tests cover all pure logic. They do not require SSH, network access, or a r
 - Each subcommand parses correctly with required and optional arguments.
 - Verbosity: no flag → WARN, `-v` → INFO, `-vv` → DEBUG, `-vvv` → TRACE.
 - Session name present and absent on commands that accept `[session-name]`.
-- `init` does not require `relocal.toml`; all other commands do.
+- `init` does not require a repo root; all other commands require `relocal.toml` or `.git` in CWD.
 
 ### Integration Tests
 

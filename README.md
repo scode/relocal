@@ -103,25 +103,26 @@ cargo install --path .
 mkdir -p ~/.relocal
 echo 'remote = "user@host"' > ~/.relocal/config.toml
 
-# In your project directory, create a per-repo config (optional if user config has remote)
-cd ~/my-project
-relocal init
-# Follow the prompts and set remote to user@host
-grep -qxF 'relocal.toml' .gitignore 2>/dev/null || echo 'relocal.toml' >> .gitignore
-
 # Install dependencies on the remote (Rust, Node, Claude Code, Codex, etc.)
+cd ~/any-git-repo
 relocal remote install
 
-# Start a session (run one or both concurrently)
+# Start a session — works from the root of any git repo, no per-repo config needed
 relocal claude    # Claude Code
 relocal codex     # Codex
 ```
+
+Per-repo config is optional. Run `relocal init` in a project to create a `relocal.toml` with repo-specific overrides
+(e.g., extra rsync exclusions or a different remote).
 
 Once a session is running, a background loop keeps local in sync with remote changes automatically. Multiple tools can
 run against the same session simultaneously — each gets its own interactive SSH session while sharing the sync loop.
 
 Both Claude and Codex authenticate during `relocal remote install`. Codex uses a device code flow (prints a URL and
 one-time code to enter in any browser).
+
+Session names default to `<dirname>-<hash>` (e.g., `my-project-a1b2c3d4`), derived from the repo path and git origin.
+Use `relocal list` to see session directories on the remote.
 
 ### Common Commands
 

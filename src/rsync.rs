@@ -25,7 +25,7 @@ pub enum Direction {
 /// [`build_rsync_args`] call. [`ProcessRunner::run_rsync`](crate::runner::ProcessRunner)
 /// uses `direction` and `local_path` to validate the local destination on pull,
 /// refusing to run `rsync --delete` against a directory that doesn't contain
-/// `relocal.toml`.
+/// `relocal.toml` or `.git`.
 #[derive(Debug)]
 pub struct RsyncParams {
     args: Vec<String>,

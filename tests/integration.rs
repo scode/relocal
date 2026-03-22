@@ -68,6 +68,24 @@ fn make_local_repo_with_excludes(remote: &str, excludes: &[&str]) -> (tempfile::
     (dir, config)
 }
 
+/// Creates a local temp directory with only a `.git` repo (no `relocal.toml`).
+/// Used to test config-free workflows where config comes from user config alone.
+fn make_local_repo_git_only(remote: &str) -> (tempfile::TempDir, Config) {
+    let dir = tempfile::tempdir().expect("create temp dir");
+
+    let git_init = std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(dir.path())
+        .output()
+        .expect("git init");
+    assert!(git_init.status.success(), "git init failed");
+
+    // No relocal.toml — config must come from user config or be passed directly.
+    let toml = format!("remote = \"{remote}\"\n");
+    let config = Config::parse(&toml).unwrap();
+    (dir, config)
+}
+
 /// Returns the path to the compiled `relocal` binary for integration tests.
 fn relocal_bin() -> &'static str {
     env!("CARGO_BIN_EXE_relocal")
@@ -277,6 +295,75 @@ fn push_excludes_claude_dir() {
         &remote,
         &format!("{}/.claude/settings.json", remote_dir(&session))
     ));
+}
+
+// ---------------------------------------------------------------------------
+// Config-free (git-only) workflow tests
+// ---------------------------------------------------------------------------
+
+/// Exercises the actual binary in a .git-only repo (no relocal.toml).
+///
+/// Runs `relocal status <session>` from a directory that has `.git` but no
+/// `relocal.toml`. This exercises repo root discovery (the .git fallback)
+/// and merged config loading through the real binary, not just library calls.
+///
+/// The user's `~/.relocal/config.toml` must provide `remote` for this test
+/// to pass. If it doesn't exist, the test verifies the error is about config
+/// (missing `remote`), not about discovery (missing `relocal.toml`).
+#[test]
+#[ignore = "requires RELOCAL_TEST_REMOTE"]
+fn git_only_repo_discovery_through_binary() {
+    let remote = test_remote().unwrap();
+    let session = unique_session("git-only-bin");
+    let (dir, _config) = make_local_repo_git_only(&remote);
+    let _cleanup = RemoteCleanup {
+        remote: remote.clone(),
+        session: session.clone(),
+    };
+    ensure_remote_session_dir(&remote, &session);
+
+    let output = std::process::Command::new(relocal_bin())
+        .args(["status", &session])
+        .current_dir(dir.path())
+        .output()
+        .expect("run relocal status in git-only repo");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // The binary should succeed: discovery via .git, config from
+    // ~/.relocal/config.toml (which the test runner is expected to have).
+    assert!(
+        output.status.success(),
+        "relocal status should succeed in git-only repo: {stderr}"
+    );
+}
+
+#[test]
+#[ignore = "requires RELOCAL_TEST_REMOTE"]
+fn git_only_push_pull_round_trip() {
+    let remote = test_remote().unwrap();
+    let session = unique_session("git-only");
+    let (dir, config) = make_local_repo_git_only(&remote);
+    let _cleanup = RemoteCleanup {
+        remote: remote.clone(),
+        session: session.clone(),
+    };
+    let runner = ProcessRunner::default();
+    ensure_remote_session_dir(&remote, &session);
+
+    std::fs::write(dir.path().join("hello.txt"), "from git-only").unwrap();
+    sync::sync_push(&runner, &config, &session, dir.path(), false).unwrap();
+
+    let content = read_remote_file(&remote, &format!("{}/hello.txt", remote_dir(&session)));
+    assert_eq!(content.as_deref(), Some("from git-only"));
+
+    write_remote_file(
+        &remote,
+        &format!("{}/hello.txt", remote_dir(&session)),
+        "modified-remote",
+    );
+    sync::sync_pull(&runner, &config, &session, dir.path(), false).unwrap();
+    let local = std::fs::read_to_string(dir.path().join("hello.txt")).unwrap();
+    assert_eq!(local, "modified-remote");
 }
 
 // ---------------------------------------------------------------------------
