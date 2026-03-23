@@ -52,6 +52,21 @@ pub fn connect_or_spawn(
     repo_root: &Path,
     verbosity: u8,
 ) -> Result<DaemonConnection> {
+    connect_or_spawn_with_exe(session_name, remote, repo_root, verbosity, None)
+}
+
+/// Like [`connect_or_spawn`], but allows overriding the daemon binary path.
+///
+/// When `daemon_exe` is `None`, uses `std::env::current_exe()`. Integration
+/// tests pass the compiled binary path since `current_exe()` returns the
+/// test harness binary, which doesn't handle the `_daemon` subcommand.
+pub fn connect_or_spawn_with_exe(
+    session_name: &str,
+    remote: &str,
+    repo_root: &Path,
+    verbosity: u8,
+    daemon_exe: Option<&Path>,
+) -> Result<DaemonConnection> {
     let socket_path = ssh::daemon_socket_path(session_name, remote);
 
     debug!("Checking for existing daemon at {}", socket_path.display());
@@ -101,9 +116,12 @@ pub fn connect_or_spawn(
     })?;
 
     // The daemon is the same binary invoked with the hidden `_daemon` subcommand.
-    let exe = std::env::current_exe().map_err(|e| Error::DaemonSpawnFailed {
-        message: format!("failed to determine current executable: {e}"),
-    })?;
+    let exe = match daemon_exe {
+        Some(path) => path.to_path_buf(),
+        None => std::env::current_exe().map_err(|e| Error::DaemonSpawnFailed {
+            message: format!("failed to determine current executable: {e}"),
+        })?,
+    };
     debug!(
         "Spawning daemon: {} _daemon {} {}",
         exe.display(),

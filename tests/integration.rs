@@ -640,7 +640,14 @@ fn daemon_spawns_and_client_connects() {
     std::fs::write(dir.path().join("data.txt"), "hello").unwrap();
 
     // connect_or_spawn should start a daemon and return a connection.
-    let conn = daemon_client::connect_or_spawn(&session, &remote, dir.path(), 0).unwrap();
+    let conn = daemon_client::connect_or_spawn_with_exe(
+        &session,
+        &remote,
+        dir.path(),
+        0,
+        Some(relocal_bin().as_ref()),
+    )
+    .unwrap();
 
     // The connection should provide a valid ControlMaster path.
     assert!(
@@ -682,11 +689,25 @@ fn daemon_second_client_reuses_existing() {
 
     std::fs::write(dir.path().join("data.txt"), "hello").unwrap();
 
-    let conn1 = daemon_client::connect_or_spawn(&session, &remote, dir.path(), 0).unwrap();
+    let conn1 = daemon_client::connect_or_spawn_with_exe(
+        &session,
+        &remote,
+        dir.path(),
+        0,
+        Some(relocal_bin().as_ref()),
+    )
+    .unwrap();
     let control_path_1 = conn1.control_master_path().to_path_buf();
 
     // Second client should connect to the same daemon.
-    let conn2 = daemon_client::connect_or_spawn(&session, &remote, dir.path(), 0).unwrap();
+    let conn2 = daemon_client::connect_or_spawn_with_exe(
+        &session,
+        &remote,
+        dir.path(),
+        0,
+        Some(relocal_bin().as_ref()),
+    )
+    .unwrap();
     let control_path_2 = conn2.control_master_path().to_path_buf();
 
     assert_eq!(
@@ -722,7 +743,14 @@ fn daemon_does_final_pull_on_last_disconnect() {
         session: session.clone(),
     };
 
-    let conn = daemon_client::connect_or_spawn(&session, &remote, dir.path(), 0).unwrap();
+    let conn = daemon_client::connect_or_spawn_with_exe(
+        &session,
+        &remote,
+        dir.path(),
+        0,
+        Some(relocal_bin().as_ref()),
+    )
+    .unwrap();
 
     // Create a file on the remote while the daemon is running.
     write_remote_file(
