@@ -26,3 +26,39 @@ Two steps, each its own change:
    — without it, commands fail as before. But fields like `remote` can come from the user config.
 2. Allow running without a project-level `relocal.toml` at all. If the user config provides `remote`, that's enough.
    This is the step that actually achieves the "cd into any repo and go" goal.
+
+## Running without a project config (phase 2)
+
+The hard part here isn't config loading — `load_merged_config` already handles a missing project config gracefully. The
+hard part is that two safety mechanisms used `relocal.toml` as their anchor, and without it, `rsync --delete` has fewer
+guardrails against wiping the wrong directory.
+
+### What relocal.toml was doing for safety
+
+Two things, beyond holding configuration:
+
+1. **Repo root discovery.** `find_repo_root()` only returned a path if `relocal.toml` existed there. This scoped what
+   rsync would sync — get this wrong and `--delete` wipes whatever directory you pointed it at.
+2. **Pull target validation.** Before running `rsync --delete` on a pull, `validate_local_pull_target()` checked that
+   the local destination contained `relocal.toml`. A second line of defense against a bug in higher-level code passing
+   the wrong path.
+
+Both of these need replacement anchors when there's no project config.
+
+### .git as the replacement anchor
+
+The `.git` directory (or file, in the case of worktrees) is the natural replacement. If CWD contains `.git`, it's a git
+repo root, and that's what relocal syncs. The no-upward-walk rule still applies — same rationale as before about
+preventing accidental syncs of parent directories.
+
+For pull validation, accepting `.git` as an alternative to `relocal.toml` is slightly weaker (a `.git` directory is more
+common than a `relocal.toml`), but the scenario where rsync targets the wrong git repo is not meaningfully more
+dangerous than targeting the right one — the real danger is targeting a non-repo directory like `$HOME`, and `.git`
+prevents that.
+
+### Session naming
+
+All default session names are now `<dirname>-<8-hex-chars>`, regardless of whether `relocal.toml` is present. The hash
+is SHA-256 of the canonical local path and git origin URL, truncated to 4 bytes. Using the same format everywhere avoids
+a class of problems where adding or removing `relocal.toml` silently changes the session name, causing later commands to
+miss the existing session and create a duplicate remote working copy.

@@ -15,7 +15,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(
-        "relocal.toml not found in {start_dir}. Run relocal from the project root, or run `relocal init` to create one."
+        "no relocal.toml or .git found in {start_dir}. Run relocal from a git repo root, or run `relocal init` to create a config."
     )]
     ConfigNotFound { start_dir: PathBuf },
 

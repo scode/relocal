@@ -127,12 +127,11 @@ fn login_shell_wrap(command: &str) -> String {
     format!("bash -lc {quoted}")
 }
 
-/// Validates that the local pull target is a relocal repo root.
+/// Validates that the local pull target is a repo root.
 ///
-/// Canonicalizes the path and checks for `relocal.toml` — the same marker
-/// [`find_repo_root`](crate::discovery::find_repo_root) uses. This prevents
-/// `rsync --delete` from wiping an unintended directory if a bug in
-/// higher-level code passes the wrong `repo_root`.
+/// Canonicalizes the path and delegates to [`find_repo_root`] for marker
+/// validation. This prevents `rsync --delete` from wiping an unintended
+/// directory if a bug in higher-level code passes the wrong `repo_root`.
 fn validate_local_pull_target(local_path: &Path) -> Result<()> {
     let canonical = local_path
         .canonicalize()
@@ -143,15 +142,13 @@ fn validate_local_pull_target(local_path: &Path) -> Result<()> {
                 local_path.display()
             ),
         })?;
-    if !canonical.join("relocal.toml").is_file() {
-        return Err(Error::CommandFailed {
-            command: "rsync".to_string(),
-            message: format!(
-                "refusing to pull: {} does not contain relocal.toml",
-                canonical.display()
-            ),
-        });
-    }
+    crate::discovery::find_repo_root(&canonical).map_err(|_| Error::CommandFailed {
+        command: "rsync".to_string(),
+        message: format!(
+            "refusing to pull: {} does not contain relocal.toml or a valid .git",
+            canonical.display()
+        ),
+    })?;
     Ok(())
 }
 
@@ -256,12 +253,12 @@ mod tests {
     }
 
     #[test]
-    fn pull_refused_without_toml() {
+    fn pull_refused_without_markers() {
         let dir = tempfile::tempdir().unwrap();
         let result = validate_local_pull_target(dir.path());
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("relocal.toml"));
+        assert!(err.contains("refusing to pull"));
     }
 
     #[test]
@@ -273,16 +270,41 @@ mod tests {
     }
 
     #[test]
+    fn pull_allowed_with_git_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let git_dir = dir.path().join(".git");
+        std::fs::create_dir(&git_dir).unwrap();
+        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        let result = validate_local_pull_target(dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn pull_allowed_with_git_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".git"), "gitdir: /some/path").unwrap();
+        let result = validate_local_pull_target(dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn pull_refused_with_stray_git_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        // .git dir without HEAD — not a real git repo
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        let result = validate_local_pull_target(dir.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn push_skips_validation() {
         let runner = ProcessRunner::default();
-        // Use a nonexistent path — push should not validate it.
-        // A pull with this path would fail validation, but push must not.
         let params = make_params(Direction::Push, PathBuf::from("/nonexistent/path"));
         let result = runner.run_rsync(&params);
         if let Err(e) = result {
             let msg = e.to_string();
             assert!(
-                !msg.contains("relocal.toml"),
+                !msg.contains("refusing to pull"),
                 "push should not validate local path"
             );
         }
@@ -292,10 +314,9 @@ mod tests {
     fn run_rsync_pull_rejects_invalid_destination() {
         let runner = ProcessRunner::default();
         let dir = tempfile::tempdir().unwrap();
-        // No relocal.toml — ProcessRunner::run_rsync must refuse before invoking rsync.
         let params = make_params(Direction::Pull, dir.path().to_path_buf());
         let err = runner.run_rsync(&params).unwrap_err().to_string();
-        assert!(err.contains("relocal.toml"));
+        assert!(err.contains("refusing to pull"));
     }
 
     #[test]

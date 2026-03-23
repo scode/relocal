@@ -30,8 +30,8 @@ fn load_config() -> (PathBuf, config::Config) {
     (root, cfg)
 }
 
-/// Resolves the session name: uses the explicit name if given, otherwise
-/// derives it from the repo root directory name.
+/// Resolves the session name: explicit name if given, otherwise hashed from
+/// the repo root path and git origin.
 fn resolve_session(name: Option<String>, repo_root: &Path) -> String {
     match name {
         Some(n) => {
@@ -41,7 +41,7 @@ fn resolve_session(name: Option<String>, repo_root: &Path) -> String {
             });
             n
         }
-        None => session::default_session_name(repo_root).unwrap_or_else(|e| {
+        None => session::hashed_session_name(repo_root).unwrap_or_else(|e| {
             error!("{e}");
             std::process::exit(1);
         }),

@@ -41,7 +41,7 @@ pub enum Command {
 
     /// Sync and launch an interactive Claude session on the remote.
     Claude {
-        /// Session name (defaults to directory name).
+        /// Session name (defaults to <dirname>-<hash>).
         session_name: Option<String>,
 
         /// Extra arguments passed through to `claude` (after `--`).
@@ -51,7 +51,7 @@ pub enum Command {
 
     /// Sync and launch an interactive Codex session on the remote.
     Codex {
-        /// Session name (defaults to directory name).
+        /// Session name (defaults to <dirname>-<hash>).
         session_name: Option<String>,
 
         /// Extra arguments passed through to `codex` (after `--`).
@@ -61,7 +61,7 @@ pub enum Command {
 
     /// Open an interactive SSH shell in the remote session directory.
     Ssh {
-        /// Session name (defaults to directory name).
+        /// Session name (defaults to <dirname>-<hash>).
         session_name: Option<String>,
     },
 
@@ -73,13 +73,13 @@ pub enum Command {
 
     /// Show session status.
     Status {
-        /// Session name (defaults to directory name).
+        /// Session name (defaults to <dirname>-<hash>).
         session_name: Option<String>,
     },
 
     /// Tail the daemon log for a session.
     Log {
-        /// Session name (defaults to directory name).
+        /// Session name (defaults to <dirname>-<hash>).
         session_name: Option<String>,
     },
 
@@ -88,7 +88,7 @@ pub enum Command {
 
     /// Remove a session's remote working copy.
     Destroy {
-        /// Session name (defaults to directory name).
+        /// Session name (defaults to <dirname>-<hash>).
         session_name: Option<String>,
     },
 
@@ -114,12 +114,12 @@ pub enum RemoteCommand {
 pub enum SyncCommand {
     /// Push local files to the remote.
     Push {
-        /// Session name (defaults to directory name).
+        /// Session name (defaults to <dirname>-<hash>).
         session_name: Option<String>,
     },
     /// Pull remote files to local.
     Pull {
-        /// Session name (defaults to directory name).
+        /// Session name (defaults to <dirname>-<hash>).
         session_name: Option<String>,
     },
 }
