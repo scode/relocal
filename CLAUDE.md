@@ -74,6 +74,9 @@ Rules:
   `fix`, not `refactor`. A new CLI flag is `feat`, not `chore`.
 - The summary after the colon is lowercase, imperative mood, no trailing period.
 - Keep the first line under 72 characters.
+- Do not add boilerplate about generated output, co-authors, tool names, or tests run. Mention validation commands such
+  as `cargo fmt`, `cargo clippy`, or `cargo test` only when the project's commit or PR rules explicitly require that
+  information. Running those commands is expected; the commit message does not need a receipt.
 
 ## Before Finishing Work
 
